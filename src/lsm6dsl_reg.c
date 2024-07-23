@@ -5245,7 +5245,7 @@ int32_t lsm6dsl_den_mode_set(const stmdev_ctx_t *ctx,
     ctrl6_c.den_mode = (uint8_t)val;
     ret = lsm6dsl_write_reg(ctx, LSM6DSL_CTRL6_C, (uint8_t *)&ctrl6_c, 1);
   }
-
+  
   return ret;
 }
 
