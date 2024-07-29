@@ -2,13 +2,15 @@
 #include <zephyr/device.h>
 #include <stdio.h>
 #include <zephyr/sys/util.h>
+#include "storage_nvs.h"
 #include "lsm6dsl_reg.h"
 #include "lsm6dsl_load.h"
-#include "storage_nvs.h"
+
 #include <zephyr/usb/usb_device.h>
 #include <zephyr/usb/usbd.h>
 #include <zephyr/drivers/uart.h>
-#include <zephyr/fs/nvs.h>
+
+K_HEAP_DEFINE(BUFFER,512);
 
 LOG_MODULE_REGISTER(MOTION_SENSOR, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -37,13 +39,16 @@ int main(void)
 	} else {
 		LOG_INF("Baudrate detected: %d", baudrate);
 	}
+	
+	struct storage_module *storage_m = (struct storage_module*)k_malloc(sizeof(struct storage_module));
 
-	struct nvs_fs *nvs_storage_ptr;	
-	if(init_storage(nvs_storage_ptr)) {
+	if(init_storage(storage_m)) {
 		LOG_ERR("storage not working");
 	};
 
-  	lsm6dsl_init(nvs_storage_ptr);	
+  	if(lsm6dsl_init(storage_m)) {
+		LOG_ERR("could not initialize motion sensor");
+	}
 
 	while (true) {
 		k_sleep(K_MSEC(5000));				

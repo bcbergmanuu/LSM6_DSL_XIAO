@@ -8,14 +8,15 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/fs/nvs.h>
+#include <math.h>
+#include "storage_nvs.h"
 
 #define TX_BUF_DIM          1000
 #define BOOT_TIME        30 //ms 15ms minimum 
 #define LSM6DSL_ADDR 0x6a
 #define ZEPHYR_USER_NODE DT_PATH(zephyr_user)
 #define fifo_pattern 3 //3x 16 bit for only the accelometer
-#define FIFO_BUFFER_LENGTH 675 //2046max /3 byte per sample samples /26hz =27sec
+#define FIFO_BUFFER_LENGTH 225 //test value, replace with:--> 675 //2046max /3 byte per sample samples /26hz =27sec
 
 struct k_sem my_sem;
 
@@ -25,7 +26,6 @@ LOG_MODULE_REGISTER(LSM6DSL_LOAD, CONFIG_LOG_DEFAULT_LEVEL);
 
 static uint8_t whoamI, rst;
 const struct device *i2c;
-static struct nvs_fs *nvs_storage_ptr;
 static struct gpio_callback lsm6dsl_interrupt;
 static stmdev_ctx_t dev_ctx;
 
@@ -35,7 +35,6 @@ typedef union {
 } axis3bit16_t;
 
 static axis3bit16_t data_raw_acceleration;
-
 
 void lsm6dsl_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins);
 
@@ -69,9 +68,17 @@ void lsm6dsl_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pi
   k_sem_give(&my_sem);
 }
 
-void lsm6dsl_init(struct nvs_fs *nvs_ptr)
+struct xlData {
+    float x;
+    float y;
+    float z;
+};  
+
+struct storage_module *storage_m;
+
+int lsm6dsl_init(struct storage_module *storage)
 {  
-  nvs_storage_ptr = nvs_ptr;
+  storage_m = storage;
   k_sem_init(&my_sem, 0, 1);
   attachinterrupt();
   /* Initialize mems driver interface */  
@@ -116,18 +123,12 @@ void lsm6dsl_init(struct nvs_fs *nvs_ptr)
   //.int1_fifo_ovr = 1, .int1_drdy_xl =1, .den_drdy_int1 =1, .drdy_on_int1 = 1,
   lsm6dsl_int1_route_t intset1 = { .int1_fth = 1};
   lsm6dsl_pin_int1_route_set(&dev_ctx, intset1); 
-  struct xlData {
-      float x;
-      float y;
-      float z;
-  };
-  
-  static uint32_t storage_cnt =0, storage_id = 0;
   
   LOG_INF("settigs completed");
 
   while(true)
   {    
+    //todo: make work item
     k_sem_take(&my_sem, K_FOREVER);
     uint16_t num = 0;
     uint32_t counter = 0;
@@ -154,20 +155,21 @@ void lsm6dsl_init(struct nvs_fs *nvs_ptr)
       counter++;                  
       
       if(counter % 100 == 0) 
-        LOG_INF("%d\t%4.2f\t%4.2f\t%4.2f\r\n",
-              counter, average_xl.x, average_xl.y, average_xl.z);
+        LOG_INF("%d\t%4.2f\t%4.2f\t%4.2f", counter, average_xl.x, average_xl.y, average_xl.z);
 
     }
     average_xl.x/= counter;
     average_xl.y/= counter;
     average_xl.z/= counter;
-    LOG_INF("average: %4.2f\t%4.2f\t%4.2f\r\n",
-              average_xl.x, average_xl.y, average_xl.z);
-    if(storage_cnt = 5) {
-      nvs_write(nvs_storage_ptr, storage_id, &average_xl, sizeof(average_xl));
-    }    
+    LOG_INF("average: %4.2f\t%4.2f\t%4.2f", average_xl.x, average_xl.y, average_xl.z);
+  
+    float vector = sqrt(pow(average_xl.x,2)+pow(average_xl.y,2)+pow(average_xl.z,2));
+    LOG_INF("average vector = sqrt(a^2+b^2+c^2) = %4.2f", vector);
+    //todo: use zephyr fifo buffer?
+    storage->store_tracked(vector);
   }  
 }
+
 /*
  * @brief  Write generic device register (platform dependent)
  *
