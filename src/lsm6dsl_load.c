@@ -16,9 +16,9 @@
 #define LSM6DSL_ADDR 0x6a
 #define ZEPHYR_USER_NODE DT_PATH(zephyr_user)
 #define fifo_pattern 3 //3x 16 bit for only the accelometer
-#define FIFO_BUFFER_LENGTH 225 //test value, replace with:--> 675 //2046max /3 byte per sample samples /26hz =27sec
+#define FIFO_BUFFER_LENGTH 675 //2046max /3 byte per sample samples /26hz =27sec
 
-struct k_sem my_sem;
+BUILD_ASSERT(FIFO_BUFFER_LENGTH % fifo_pattern == 0, "FIFO_BUFFER_LENGTH should be devisible by fifo_pattern");
 
 static const struct gpio_dt_spec signal = GPIO_DT_SPEC_GET(ZEPHYR_USER_NODE, signal_gpios);
 
@@ -37,6 +37,11 @@ typedef union {
 static axis3bit16_t data_raw_acceleration;
 
 void lsm6dsl_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins);
+
+static void lsm6dsl_data_handler(struct k_work *work);
+K_WORK_DEFINE(lsm6dsl_proces, lsm6dsl_data_handler);
+
+
 
 void attachinterrupt(void) {
 	
@@ -65,7 +70,7 @@ static void platform_init(void);
 
 void lsm6dsl_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins) {  
   LOG_INF("isr given");
-  k_sem_give(&my_sem);
+  k_work_submit(&lsm6dsl_proces);
 }
 
 struct xlData {
@@ -79,7 +84,7 @@ struct storage_module *storage_m;
 int lsm6dsl_init(struct storage_module *storage)
 {  
   storage_m = storage;
-  k_sem_init(&my_sem, 0, 1);
+  
   attachinterrupt();
   /* Initialize mems driver interface */  
   dev_ctx.write_reg = platform_write;
@@ -108,66 +113,59 @@ int lsm6dsl_init(struct storage_module *storage)
 
   lsm6dsl_fifo_mode_set(&dev_ctx, LSM6DSL_STREAM_MODE);
   lsm6dsl_xl_power_mode_set(&dev_ctx, LSM6DSL_XL_NORMAL);
-  lsm6dsl_xl_full_scale_set(&dev_ctx, LSM6DSL_16g);
+  lsm6dsl_xl_full_scale_set(&dev_ctx, LSM6DSL_2g);
   lsm6dsl_xl_reference_mode_set(&dev_ctx, PROPERTY_DISABLE);
   lsm6dsl_fifo_xl_batch_set(&dev_ctx, LSM6DSL_FIFO_XL_NO_DEC);
   lsm6dsl_fifo_gy_batch_set(&dev_ctx, LSM6DSL_FIFO_GY_DISABLE);
   lsm6dsl_fifo_watermark_set(&dev_ctx, FIFO_BUFFER_LENGTH*fifo_pattern);
   lsm6dsl_fifo_write_trigger_set(&dev_ctx, LSM6DSL_TRG_XL_GY_DRDY);
   lsm6dsl_den_mode_set(&dev_ctx, LSM6DSL_EDGE_TRIGGER);
-  lsm6dsl_fifo_data_rate_set(&dev_ctx, LSM6DSL_FIFO_26Hz);
+  lsm6dsl_fifo_data_rate_set(&dev_ctx, LSM6DSL_FIFO_208Hz); //26
   lsm6dsl_rounding_mode_set(&dev_ctx, LSM6DSL_ROUND_XL);
-  lsm6dsl_xl_data_rate_set(&dev_ctx, LSM6DSL_XL_ODR_26Hz);
-  //lsm6dsl_block_data_update_set(&dev_ctx, PROPERTY_ENABLE);
+  lsm6dsl_xl_data_rate_set(&dev_ctx, LSM6DSL_XL_ODR_833Hz); //104
+  lsm6dsl_xl_hp_bandwidth_set(&dev_ctx, LSM6DSL_XL_HP_ODR_DIV_4);  
   
-  //.int1_fifo_ovr = 1, .int1_drdy_xl =1, .den_drdy_int1 =1, .drdy_on_int1 = 1,
   lsm6dsl_int1_route_t intset1 = { .int1_fth = 1};
   lsm6dsl_pin_int1_route_set(&dev_ctx, intset1); 
   
   LOG_INF("settigs completed");
+  return 0;
+}
 
-  while(true)
-  {    
-    //todo: make work item
-    k_sem_take(&my_sem, K_FOREVER);
-    uint16_t num = 0;
-    uint32_t counter = 0;
-    
-    struct xlData average_xl = {0};
-    
-    memset(data_raw_acceleration.u8bit, 0x00, 3*sizeof(int16_t));
-
-    //determine amount of entries in fifo
-    lsm6dsl_fifo_data_level_get(&dev_ctx, &num);
-    
-    LOG_INF("numvalues %d", (int)num);
-    
-    for(int x = 0; x <= num; x+=fifo_pattern) {
-      if(x > num-fifo_pattern) {
-        LOG_ERR("fifo pattern broken!");
-        break;
-      } 
-      lsm6dsl_fifo_raw_data_get(&dev_ctx, data_raw_acceleration.u8bit, fifo_pattern * sizeof(int16_t));                                                          
-
-      average_xl.x += lsm6dsl_from_fs16g_to_mg(data_raw_acceleration.i16bit[0]);
-      average_xl.y += lsm6dsl_from_fs16g_to_mg(data_raw_acceleration.i16bit[1]);
-      average_xl.z += lsm6dsl_from_fs16g_to_mg(data_raw_acceleration.i16bit[2]);
-      counter++;                  
-      
-      if(counter % 100 == 0) 
-        LOG_INF("%d\t%4.2f\t%4.2f\t%4.2f", counter, average_xl.x, average_xl.y, average_xl.z);
-
-    }
-    average_xl.x/= counter;
-    average_xl.y/= counter;
-    average_xl.z/= counter;
-    LOG_INF("average: %4.2f\t%4.2f\t%4.2f", average_xl.x, average_xl.y, average_xl.z);
+static void lsm6dsl_data_handler(struct k_work *work)
+{
+  uint16_t num = 0;
+  uint32_t counter = 0;
   
-    float vector = sqrt(pow(average_xl.x,2)+pow(average_xl.y,2)+pow(average_xl.z,2));
-    LOG_INF("average vector = sqrt(a^2+b^2+c^2) = %4.2f", vector);
-    //todo: use zephyr fifo buffer?
-    storage->store_tracked(vector);
-  }  
+  struct xlData average_xl = {0};
+  
+  memset(data_raw_acceleration.u8bit, 0x00, 3*sizeof(int16_t));
+
+  //determine amount of entries in fifo
+  lsm6dsl_fifo_data_level_get(&dev_ctx, &num);
+  
+  LOG_INF("numvalues %d", (int)num);
+  
+  if(!(num % fifo_pattern == 0))
+    LOG_ERR("fifo pattern broken!");
+  for(int x = 0; x <= num; x+=fifo_pattern) {        
+    
+    lsm6dsl_fifo_raw_data_get(&dev_ctx, data_raw_acceleration.u8bit, fifo_pattern * sizeof(int16_t));                                                          
+
+    average_xl.x += lsm6dsl_from_fs2g_to_mg(data_raw_acceleration.i16bit[0]);
+    average_xl.y += lsm6dsl_from_fs2g_to_mg(data_raw_acceleration.i16bit[1]);
+    average_xl.z += lsm6dsl_from_fs2g_to_mg(data_raw_acceleration.i16bit[2]);
+    counter++;                        
+  }
+  average_xl.x/= counter;
+  average_xl.y/= counter;
+  average_xl.z/= counter;
+  LOG_INF("average: %4.2f\t%4.2f\t%4.2f", average_xl.x, average_xl.y, average_xl.z);
+
+  float vector = sqrt(pow(average_xl.x,2)+pow(average_xl.y,2)+pow(average_xl.z,2));
+  LOG_INF("average vector = sqrt(a^2+b^2+c^2) = %4.2f", vector);
+  //todo: use zephyr fifo buffer?
+  storage_m->store_tracked(vector);
 }
 
 /*
