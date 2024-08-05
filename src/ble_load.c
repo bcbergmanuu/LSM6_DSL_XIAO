@@ -25,7 +25,11 @@
 #include <zephyr/bluetooth/services/hrs.h>
 #include <zephyr/bluetooth/services/ias.h>
 
+#include <zephyr/logging/log.h>
+
 #include "cts.h"
+
+LOG_MODULE_REGISTER(bluetooth_m, CONFIG_LOG_DEFAULT_LEVEL);
 
 /* Custom Service Variables */
 #define BT_UUID_CUSTOM_SERVICE_VAL \
@@ -72,24 +76,10 @@ static ssize_t write_vnd(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 }
 
 static uint8_t simulate_vnd;
-static uint8_t indicating;
-static struct bt_gatt_indicate_params ind_params;
 
 static void vnd_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
 	simulate_vnd = (value == BT_GATT_CCC_INDICATE) ? 1 : 0;
-}
-
-static void indicate_cb(struct bt_conn *conn,
-			struct bt_gatt_indicate_params *params, uint8_t err)
-{
-	printk("Indication %s\n", err != 0U ? "fail" : "success");
-}
-
-static void indicate_destroy(struct bt_gatt_indicate_params *params)
-{
-	printk("Indication complete\n");
-	indicating = 0U;
 }
 
 #define VND_LONG_MAX_LEN 74
@@ -228,7 +218,7 @@ static const struct bt_data ad[] = {
 
 void mtu_updated(struct bt_conn *conn, uint16_t tx, uint16_t rx)
 {
-	printk("Updated MTU: TX: %d RX: %d bytes\n", tx, rx);
+	LOG_INF("Updated MTU: TX: %d RX: %d bytes\n", tx, rx);
 }
 
 static struct bt_gatt_cb gatt_callbacks = {
@@ -238,30 +228,30 @@ static struct bt_gatt_cb gatt_callbacks = {
 static void connected(struct bt_conn *conn, uint8_t err)
 {
 	if (err) {
-		printk("Connection failed (err 0x%02x)\n", err);
+		LOG_INF("Connection failed (err 0x%02x)\n", err);
 	} else {
-		printk("Connected\n");
+		LOG_INF("Connected\n");
 	}
 }
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
-	printk("Disconnected (reason 0x%02x)\n", reason);
+	LOG_INF("Disconnected (reason 0x%02x)\n", reason);
 }
 
 static void alert_stop(void)
 {
-	printk("Alert stopped\n");
+	LOG_INF("Alert stopped\n");
 }
 
 static void alert_start(void)
 {
-	printk("Mild alert started\n");
+	LOG_INF("Mild alert started\n");
 }
 
 static void alert_high_start(void)
 {
-	printk("High alert started\n");
+	LOG_INF("High alert started\n");
 }
 
 BT_CONN_CB_DEFINE(conn_callbacks) = {
@@ -279,9 +269,7 @@ static void bt_ready(void)
 {
 	int err;
 
-	printk("Bluetooth initialized\n");
-    
-	cts_init();
+	LOG_INF("Bluetooth initialized\n");	
 
 	if (IS_ENABLED(CONFIG_SETTINGS)) {
 		settings_load();
@@ -293,7 +281,7 @@ static void bt_ready(void)
 		return;
 	}
 
-	printk("Advertising successfully started\n");
+	LOG_INF("Advertising successfully started\n");
 }
 
 static void auth_passkey_display(struct bt_conn *conn, unsigned int passkey)
@@ -302,7 +290,7 @@ static void auth_passkey_display(struct bt_conn *conn, unsigned int passkey)
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
-	printk("Passkey for %s: %06u\n", addr, passkey);
+	LOG_INF("Passkey for %s: %06u\n", addr, passkey);
 }
 
 static void auth_cancel(struct bt_conn *conn)
@@ -311,7 +299,7 @@ static void auth_cancel(struct bt_conn *conn)
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
-	printk("Pairing cancelled: %s\n", addr);
+	LOG_INF("Pairing cancelled: %s\n", addr);
 }
 
 static struct bt_conn_auth_cb auth_cb_display = {
@@ -319,19 +307,6 @@ static struct bt_conn_auth_cb auth_cb_display = {
 	.passkey_entry = NULL,
 	.cancel = auth_cancel,
 };
-
-static void bas_notify(void)
-{
-	uint8_t battery_level = bt_bas_get_battery_level();
-
-	battery_level--;
-
-	if (!battery_level) {
-		battery_level = 100U;
-	}
-
-	bt_bas_set_battery_level(battery_level);
-}
 
 int ble_load(void)
 {
@@ -341,7 +316,7 @@ int ble_load(void)
 
 	err = bt_enable(NULL);
 	if (err) {
-		printk("Bluetooth init failed (err %d)\n", err);
+		LOG_INF("Bluetooth init failed (err %d)\n", err);
 		return 0;
 	}
 
@@ -353,36 +328,7 @@ int ble_load(void)
 	vnd_ind_attr = bt_gatt_find_by_uuid(vnd_svc.attrs, vnd_svc.attr_count,
 					    &vnd_enc_uuid.uuid);
 	bt_uuid_to_str(&vnd_enc_uuid.uuid, str, sizeof(str));
-	printk("Indicate VND attr %p (UUID %s)\n", vnd_ind_attr, str);
-
-	/* Implement notification. At the moment there is no suitable way
-	 * of starting delayed work so we do it here
-	 */
-	while (1) {
-		k_sleep(K_SECONDS(1));
-
-		/* Current Time Service updates only when time is changed */
-		cts_notify();
-
-		/* Battery level simulation */
-		bas_notify();
-
-		/* Vendor indication simulation */
-		if (simulate_vnd && vnd_ind_attr) {
-			if (indicating) {
-				continue;
-			}
-
-			ind_params.attr = vnd_ind_attr;
-			ind_params.func = indicate_cb;
-			ind_params.destroy = indicate_destroy;
-			ind_params.data = &indicating;
-			ind_params.len = sizeof(indicating);
-
-			if (bt_gatt_indicate(NULL, &ind_params) == 0) {
-				indicating = 1U;
-			}
-		}
-	}
+	LOG_INF("Indicate VND attr %p (UUID %s)\n", vnd_ind_attr, str);
+	
 	return 0;
 }

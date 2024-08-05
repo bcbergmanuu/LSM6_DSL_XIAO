@@ -1,10 +1,10 @@
 #ifndef LSM6DSL_STORAGE_H
 #define LSM6DSL_STORAGE_H
 
-//#define FLASH_BUFFER_SIZE 9 //test falue use --> 64 has to be deviceable by 3
-#define FLASH_BUFFER_DIV 3
-//BUILD_ASSERT(FLASH_BUFFER_SIZE % FLASH_BUFFER_DIV ==0, "FLASH_BUFFER_SIZE should be devisible by 3");
-#define FLASH_BUFFER_SIZE_NVS 3 // FLASH_BUFFER_SIZE / FLASH_BUFFER_DIV
+//buffer of 30sec, average of total 60s
+#define FLASH_BUFFER_DIV 2
+//store each 60 minutes
+#define FLASH_BUFFER_SIZE_NVS 4
 
 struct storage_module {
     void (* store_tracked)(float);

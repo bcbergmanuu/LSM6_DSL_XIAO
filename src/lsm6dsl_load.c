@@ -120,9 +120,9 @@ int lsm6dsl_init(struct storage_module *storage)
   lsm6dsl_fifo_watermark_set(&dev_ctx, FIFO_BUFFER_LENGTH*fifo_pattern);
   lsm6dsl_fifo_write_trigger_set(&dev_ctx, LSM6DSL_TRG_XL_GY_DRDY);
   lsm6dsl_den_mode_set(&dev_ctx, LSM6DSL_EDGE_TRIGGER);
-  lsm6dsl_fifo_data_rate_set(&dev_ctx, LSM6DSL_FIFO_208Hz); //26
+  lsm6dsl_fifo_data_rate_set(&dev_ctx, LSM6DSL_FIFO_1k66Hz); //12Hz5
   lsm6dsl_rounding_mode_set(&dev_ctx, LSM6DSL_ROUND_XL);
-  lsm6dsl_xl_data_rate_set(&dev_ctx, LSM6DSL_XL_ODR_833Hz); //104
+  lsm6dsl_xl_data_rate_set(&dev_ctx, LSM6DSL_XL_ODR_6k66Hz);  //52Hz
   lsm6dsl_xl_hp_bandwidth_set(&dev_ctx, LSM6DSL_XL_HP_ODR_DIV_4);  
   
   lsm6dsl_int1_route_t intset1 = { .int1_fth = 1};
@@ -145,10 +145,8 @@ static void lsm6dsl_data_handler(struct k_work *work)
   lsm6dsl_fifo_data_level_get(&dev_ctx, &num);
   
   LOG_INF("numvalues %d", (int)num);
-  
-  if(!(num % fifo_pattern == 0))
-    LOG_ERR("fifo pattern broken!");
-  for(int x = 0; x <= num; x+=fifo_pattern) {        
+
+  for(int x = 0; x <= (num-fifo_pattern); x+=fifo_pattern) {        
     
     lsm6dsl_fifo_raw_data_get(&dev_ctx, data_raw_acceleration.u8bit, fifo_pattern * sizeof(int16_t));                                                          
 
@@ -164,7 +162,7 @@ static void lsm6dsl_data_handler(struct k_work *work)
 
   float vector = sqrt(pow(average_xl.x,2)+pow(average_xl.y,2)+pow(average_xl.z,2));
   LOG_INF("average vector = sqrt(a^2+b^2+c^2) = %4.2f", vector);
-  //todo: use zephyr fifo buffer?
+  
   storage_m->store_tracked(vector);
 }
 
