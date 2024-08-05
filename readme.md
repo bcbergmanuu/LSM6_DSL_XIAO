@@ -1,7 +1,7 @@
 todo:
--  time start recording using BLE position 0
--  bluetooth download all data
+-  bluetooth download all data (protobuf)
 -  bluetooth battery info
--  Set device ID (0-31) using BLE
--  bluetooth reset device
--  storage: currently 32bit float. use 3d axis object instead (same bits?)
+-  bluetooth time service
+-  bluetooth deviceId
+-  bluetooth reset device  
+-  battery LED, read only every 10min (using rtc alarm?)
