@@ -1,10 +1,8 @@
 #ifndef LSM6DSL_STORAGE_H
 #define LSM6DSL_STORAGE_H
 
-//buffer of 30sec, average of total 60s
-#define FLASH_BUFFER_DIV 2
 //store each 60 minutes
-#define FLASH_BUFFER_SIZE_NVS 4
+#define FLASH_BUFFER_SIZE_NVS 60
 
 struct storage_module {
     void (* store_tracked)(float);

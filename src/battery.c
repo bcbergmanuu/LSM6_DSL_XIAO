@@ -15,20 +15,25 @@
  */
 
 #include "battery.h"
-
+#include <zephyr/bluetooth/services/bas.h>
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/adc.h>
 #include <zephyr/logging/log.h>
+
+#include <zephyr/pm/device.h>
+
 LOG_MODULE_REGISTER(battery, LOG_LEVEL_INF);
 
-static const struct device *gpio_battery_dev = DEVICE_DT_GET(DT_NODELABEL(gpio0));
-static const struct device *adc_battery_dev = DEVICE_DT_GET(DT_NODELABEL(adc));
 
-static K_MUTEX_DEFINE(battery_mut);
 
+static void update_ble_handler(struct k_work *work);
+
+K_WORK_DELAYABLE_DEFINE(ble_send_work, update_ble_handler);
+
+#define BAS_UPDATE_FREQUENCY 10
 #define GPIO_BATTERY_CHARGE_SPEED 13
 #define GPIO_BATTERY_CHARGING_ENABLE 17
 #define GPIO_BATTERY_READ_ENABLE 14
@@ -36,15 +41,18 @@ static K_MUTEX_DEFINE(battery_mut);
 // Change this to a higher number for better averages
 // Note that increasing this holds up the thread / ADC for longer.
 #define ADC_TOTAL_SAMPLES 10
-int16_t sample_buffer[ADC_TOTAL_SAMPLES];
+
+//--------------------------------------------------------------
+// ADC setup
 
 #define ADC_RESOLUTION 12
 #define ADC_CHANNEL 7
 #define ADC_PORT SAADC_CH_PSELP_PSELP_AnalogInput7 // AIN7
 #define ADC_REFERENCE ADC_REF_INTERNAL             // 0.6V
 #define ADC_GAIN ADC_GAIN_1_6                      // ADC REFERENCE * 6 = 3.6V
+#define ADC_SAMPLE_INTERVAL_US 500                 // Time between each sample
 
-struct adc_channel_cfg channel_7_cfg = {
+static struct adc_channel_cfg channel_7_cfg = {
     .gain = ADC_GAIN,
     .reference = ADC_REFERENCE,
     .acquisition_time = ADC_ACQ_TIME_DEFAULT,
@@ -56,16 +64,30 @@ struct adc_channel_cfg channel_7_cfg = {
 
 static struct adc_sequence_options options = {
     .extra_samplings = ADC_TOTAL_SAMPLES - 1,
-    .interval_us = 500, // Interval between each sample
+    .interval_us = ADC_SAMPLE_INTERVAL_US,
 };
 
-struct adc_sequence sequence = {
+static int16_t sample_buffer[ADC_TOTAL_SAMPLES];
+static struct adc_sequence sequence = {
     .options = &options,
     .channels = BIT(ADC_CHANNEL),
     .buffer = sample_buffer,
     .buffer_size = sizeof(sample_buffer),
     .resolution = ADC_RESOLUTION,
 };
+
+//--------------------------------------------------------------
+
+// MCU peripherals for reading battery voltage
+static const struct device *gpio_battery_dev = DEVICE_DT_GET(DT_NODELABEL(gpio0));
+static const struct device *adc_battery_dev = DEVICE_DT_GET(DT_NODELABEL(adc));
+
+// Charging interrupt
+//static struct gpio_callback charging_callback;
+
+// Callbacks for change in charging and when a battery sample is ready.
+
+static K_MUTEX_DEFINE(battery_mut);
 
 typedef struct
 {
@@ -75,9 +97,8 @@ typedef struct
 
 #define BATTERY_STATES_COUNT 12
 // Assuming LiPo battery.
-// Source: https://forum.evolvapor.com/topic/65565-discharge-profiles-csv-for-2-3-18650-batteries-sony-vtc6-sammy-30q/
-// SHOULD USE YOUR BATTERY'S DATASHEET
-BatteryState battery_states[BATTERY_STATES_COUNT] = {
+// For better accuracy, use your battery's datasheet.
+static BatteryState battery_states[BATTERY_STATES_COUNT] = {
     {4200, 100},
     {4160, 99},
     {4090, 91},
@@ -92,56 +113,6 @@ BatteryState battery_states[BATTERY_STATES_COUNT] = {
     {0000, 0}  // Below safe level
 };
 
-static uint8_t is_initialized = false;
-
-static int battery_enable_read()
-{
-    return gpio_pin_set(gpio_battery_dev, GPIO_BATTERY_READ_ENABLE, 1);
-}
-
-int battery_set_fast_charge()
-{
-    if (!is_initialized)
-    {
-        return -ECANCELED;
-    }
-
-    return gpio_pin_set(gpio_battery_dev, GPIO_BATTERY_CHARGE_SPEED, 1); // FAST charge 100mA
-}
-
-int battery_set_slow_charge()
-{
-    if (!is_initialized)
-    {
-        return -ECANCELED;
-    }
-
-    return gpio_pin_set(gpio_battery_dev, GPIO_BATTERY_CHARGE_SPEED, 0); // SLOW charge 50mA
-}
-
-int battery_charge_start()
-{
-    int ret = 0;
-
-    if (!is_initialized)
-    {
-        return -ECANCELED;
-    }
-    ret |= battery_enable_read();
-    ret |= gpio_pin_set(gpio_battery_dev, GPIO_BATTERY_CHARGING_ENABLE, 1);
-    return ret;
-}
-
-int battery_charge_stop()
-{
-    if (!is_initialized)
-    {
-        return -ECANCELED;
-    }
-
-    return gpio_pin_set(gpio_battery_dev, GPIO_BATTERY_CHARGING_ENABLE, 0);
-}
-
 int battery_get_millivolt(uint16_t *battery_millivolt)
 {
 
@@ -150,18 +121,16 @@ int battery_get_millivolt(uint16_t *battery_millivolt)
     // Voltage divider circuit (Should tune R1 in software if possible)
     const uint16_t R1 = 1037; // Originally 1M ohm, calibrated after measuring actual voltage values. Can happen due to resistor tolerances, temperature ect..
     const uint16_t R2 = 510;  // 510K ohm
-
-    // ADC measure
-    uint16_t adc_vref = adc_ref_internal(adc_battery_dev);
+    
     int adc_mv = 0;
+    
+    ret |= k_mutex_lock(&battery_mut, K_FOREVER);
 
-    k_mutex_lock(&battery_mut, K_FOREVER);
+    ret |= pm_device_action_run(adc_battery_dev, PM_DEVICE_ACTION_RESUME);
+	
+    ret |= gpio_pin_set(gpio_battery_dev, GPIO_BATTERY_READ_ENABLE, 1);
     ret |= adc_read(adc_battery_dev, &sequence);
-
-    if (ret)
-    {
-        LOG_WRN("ADC read failed (error %d)", ret);
-    }
+    uint16_t adc_vref = adc_ref_internal(adc_battery_dev);
 
     // Get average sample value.
     for (uint8_t sample = 0; sample < ADC_TOTAL_SAMPLES; sample++)
@@ -175,6 +144,10 @@ int battery_get_millivolt(uint16_t *battery_millivolt)
 
     // Calculate battery voltage.
     *battery_millivolt = adc_mv * ((R1 + R2) / R2);
+
+    ret |= gpio_pin_set(gpio_battery_dev, GPIO_BATTERY_READ_ENABLE, 0);
+    ret |= pm_device_action_run(adc_battery_dev, PM_DEVICE_ACTION_SUSPEND);
+
     k_mutex_unlock(&battery_mut);
 
     LOG_DBG("%d mV", *battery_millivolt);
@@ -208,53 +181,35 @@ int battery_get_percentage(uint8_t *battery_percentage, uint16_t battery_millivo
     return -ESPIPE;
 }
 
+
+static void update_ble_handler(struct k_work *work) {
+    
+    uint8_t percentage = 0;
+    uint16_t millivolt = 0;
+    battery_get_millivolt(&millivolt);
+
+    battery_get_percentage(&percentage, millivolt);
+    bt_bas_set_battery_level(percentage);
+    LOG_INF("update_ble mV %d, percentage %d", millivolt, percentage);
+    k_work_schedule(&ble_send_work, K_SECONDS(BAS_UPDATE_FREQUENCY));
+}
+
 int battery_init()
 {
     int ret = 0;
-
-    // ADC
-    if (!device_is_ready(adc_battery_dev))
-    {
-        LOG_ERR("ADC device not found!");
-        return -EIO;
-    }
+    
 
     ret |= adc_channel_setup(adc_battery_dev, &channel_7_cfg);
+    //ret |= pm_device_action_run(adc_battery_dev, PM_DEVICE_ACTION_SUSPEND); does not work
 
-    if (ret)
-    {
-        LOG_ERR("ADC setup failed (error %d)", ret);
-    }
-
-    // GPIO
-    if (!device_is_ready(gpio_battery_dev))
-    {
-        LOG_ERR("GPIO device not found!");
-        return -EIO;
-    }
-
-    ret |= gpio_pin_configure(gpio_battery_dev, GPIO_BATTERY_CHARGING_ENABLE, GPIO_OUTPUT | GPIO_ACTIVE_LOW);
+    //todo: to enable charging, a pull down/up on pin 17 might be required. (13k)
     ret |= gpio_pin_configure(gpio_battery_dev, GPIO_BATTERY_READ_ENABLE, GPIO_OUTPUT | GPIO_ACTIVE_LOW);
     ret |= gpio_pin_configure(gpio_battery_dev, GPIO_BATTERY_CHARGE_SPEED, GPIO_OUTPUT | GPIO_ACTIVE_LOW);
-
-    if (ret)
-    {
-        LOG_ERR("GPIO configure failed!");
-        return ret;
-    }
-
-    if (ret)
-    {
-        LOG_ERR("Initialization failed (error %d)", ret);
-        return ret;
-    }
-
-    is_initialized = true;
+    ret |= gpio_pin_set(gpio_battery_dev, GPIO_BATTERY_CHARGE_SPEED, 1); // FAST charge 100mA
+    
     LOG_INF("Initialized");
-
-    ret |= battery_charge_start();
-    ret |= battery_enable_read();
-    ret |= battery_set_fast_charge();
+    
+    k_work_schedule(&ble_send_work, K_SECONDS(BAS_UPDATE_FREQUENCY));
 
     return ret;
 }

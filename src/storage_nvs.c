@@ -4,13 +4,12 @@
 #include <zephyr/drivers/flash.h>
 #include <zephyr/storage/flash_map.h>
 #include <zephyr/fs/nvs.h>
-#include <zephyr/drivers/counter.h>
 #include <zephyr/posix/time.h>
 #include <zephyr/sys/timeutil.h>
 
+#include <zephyr/pm/device.h>
+
 #include "storage_nvs.h"
-
-
 
 static struct nvs_fs fs;
 
@@ -25,6 +24,7 @@ LOG_MODULE_REGISTER(STORAGE_MODULE, CONFIG_LOG_DEFAULT_LEVEL);
 
 K_FIFO_DEFINE(storage_fifo);
 const struct device *spi_flash_dev;
+ 
 
 int init_internal_storage() {
 	const struct device *flash_dev = STORAGE_PARTITION_DEVICE;
@@ -34,9 +34,7 @@ int init_internal_storage() {
 		return ENODEV;
 	}
 	fs.flash_device = flash_dev;
-    int rc = 0;
-
-	
+    int rc = 0;	
 
     struct flash_pages_info info;
 
@@ -51,32 +49,18 @@ int init_internal_storage() {
 	fs.sector_size = info.size;
 	fs.sector_count = (DT_REG_SIZE(DT_NODELABEL(storage_partition)) / info.size); 
 
-	rc = flash_erase(flash_dev, info.start_offset, info.size);
-	if(rc) {
-		LOG_ERR("could not clear flash device");
-	}
-
 	rc = nvs_mount(&fs);
 	LOG_INF("fs sector size = %d", info.size);
 	if (rc) {
 		LOG_ERR("Flash Init failed\n");
 		return -1;
 	}  
-
-	return rc;
-}
-
-static const struct device *rtc_dev;
-
-
-int rtc_module_init() {
 	
-    //struct counter_top_cfg top_cfg;
-	int rc =0;
+	uint16_t storage_id = 0;
+	nvs_read(&fs, NVS_CURRENT_STORAGE_ID, &storage_id, sizeof(uint16_t));
+	LOG_INF("last written to %d", storage_id);
+	
 
-	rtc_dev = DEVICE_DT_GET(DT_ALIAS(rtcbb));
-    rc |= device_is_ready(rtc_dev);
-    //rc |= counter_start(rtc_dev);    
 	return rc;
 }
 
@@ -101,7 +85,6 @@ int set_time(time_t epoch_time) {
 
     // Set the initial time
     clock_settime(CLOCK_REALTIME, &ts);
-
 	
 	clock_gettime(CLOCK_REALTIME, &ts);
 	struct tm *current_time = gmtime(&ts.tv_sec);
@@ -109,24 +92,22 @@ int set_time(time_t epoch_time) {
 	LOG_INF("Current time: %04d-%02d-%02d %02d:%02d:%02d",
 			current_time->tm_year + 1900, current_time->tm_mon + 1, current_time->tm_mday,
 			current_time->tm_hour, current_time->tm_min, current_time->tm_sec);
-	k_sleep(K_MSEC(1000));
 	
 	return 0;
 }
 
-
 int init_storage(struct storage_module *storage) {	
-	
-	set_time(42);
-	rtc_module_init();
+		
     int rc = 0;
 	rc |= init_internal_storage();
-
+	
 	spi_flash_dev = DEVICE_DT_GET(DT_ALIAS(spi_flash0));	
 	if (!device_is_ready(spi_flash_dev)) {
 		LOG_ERR("%s: device not ready.\n", spi_flash_dev->name);
 		return ENODEV;
-	}		
+	}
+
+	
     struct flash_pages_info info;
 
 	LOG_INF("flash device found: %s", spi_flash_dev->name);	
@@ -136,15 +117,15 @@ int init_storage(struct storage_module *storage) {
 		LOG_ERR("Unable to get page info\n");
 		return -1;
 	}
+	
+	//has bug, https://devzone.nordicsemi.com/f/nordic-q-a/114224/external-flash-to-sleep
+	// if(pm_device_action_run(spi_flash_dev, PM_DEVICE_ACTION_SUSPEND)) { 
+	// 	LOG_ERR("could not suspend qspi flash device %s", spi_flash_dev->name);
+	// }
 
 	storage->store_tracked = store_tracked;
 	storage->load_tracked = load_tracked;
-
-
-	struct fifo_pack {
-		uint32_t seconds_passed;
-		float fifo_buffer[FLASH_BUFFER_SIZE_NVS];	
-	};
+	
 
 	return rc;
 }
@@ -159,14 +140,16 @@ void load_tracked(uint16_t id, float *vector_list) {
 	nvs_read(&fs, id, vector_list, sizeof(float)*FLASH_BUFFER_SIZE_NVS);
 }
 
-
 struct fifo_pack {
 	time_t seconds_passed;
 	float fifo_buffer[FLASH_BUFFER_SIZE_NVS];	
 };
-_Static_assert(sizeof(struct fifo_pack) <= FLASH_PAGE_SIZE, "keep below FLASH_PAGE_SIZE");	
 
-void storage_tester() {
+BUILD_ASSERT(sizeof(struct fifo_pack) <= FLASH_PAGE_SIZE, "keep below FLASH_PAGE_SIZE");	
+
+
+/// @brief test wether storage has been written
+void read_storage() {
 	
 	uint16_t lastid = 0;
 	struct fifo_pack buffer;
@@ -180,43 +163,41 @@ void storage_tester() {
 }
 
 
+
 void fifo_handler(void *) {
 	LOG_INF("fifo_handler thread initialized");
 	struct fifo_data_t *rx_value = {0};
-	static uint16_t storage_id = 0;  
+	static uint16_t storage_id = 0;
 	static uint32_t fifo_counter = 0;		
-	struct fifo_pack fifo_packer ={.seconds_passed =0, .fifo_buffer = {0}};		
-
-	static float buffer_div;	
+	struct fifo_pack fifo_packer ={.seconds_passed =0, .fifo_buffer = {0}};			
 	
 	while(true) {				
-		for(int div = 0; div < FLASH_BUFFER_DIV; div++) {
-			rx_value = k_fifo_get(&storage_fifo, K_FOREVER);
-			buffer_div+= rx_value->vector_n;			
-			k_free(rx_value);
-		}
-		buffer_div /=FLASH_BUFFER_DIV;
-		fifo_packer.fifo_buffer[fifo_counter] = buffer_div;
 		
-		//fifo_buffer[fifo_counter] = buffer_div;
-			
-		LOG_INF("buffered: %4.3f", buffer_div);
+		rx_value = k_fifo_get(&storage_fifo, K_FOREVER);			
+		k_free(rx_value);
+	
+		fifo_packer.fifo_buffer[fifo_counter] = rx_value->vector_n;
+						
 		fifo_counter++;
 
 		if(fifo_counter >= FLASH_BUFFER_SIZE_NVS) {
-			
 			fifo_counter = 0;  			
-			ssize_t ret = flash_write(spi_flash_dev, storage_id * FLASH_PAGE_SIZE, &fifo_packer, sizeof(float)*FLASH_BUFFER_SIZE_NVS);
-			if(ret < 0) LOG_ERR("could not write flash id: %d", storage_id);
-			else LOG_INF("stored at position %d", storage_id);
-			nvs_write(&fs, NVS_CURRENT_STORAGE_ID, &storage_id, sizeof(uint16_t));
-			storage_id++;    	
-
+			//set time for next packet to store
 			struct timespec ts = {0};
-			clock_gettime(CLOCK_REALTIME, &ts);
-			
+			clock_gettime(CLOCK_REALTIME, &ts);		
 			fifo_packer.seconds_passed = ts.tv_sec;
-			storage_tester();
+					
+			ssize_t ret = flash_write(spi_flash_dev, storage_id * FLASH_PAGE_SIZE, &fifo_packer, sizeof(float)*FLASH_BUFFER_SIZE_NVS);
+			if(ret < 0) {
+				LOG_ERR("could not write flash id: %d", storage_id);  	
+			}
+			else {
+				LOG_INF("stored at position %d", storage_id);
+				nvs_write(&fs, NVS_CURRENT_STORAGE_ID, &storage_id, sizeof(uint16_t));
+				storage_id++; 
+			}
+					
+			read_storage();
 		}		
 	}
 }

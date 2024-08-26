@@ -10,13 +10,15 @@
 #include <zephyr/logging/log.h>
 #include <math.h>
 #include "storage_nvs.h"
+#include "lsm6dsl_reg.h"
+//#include <hal/nrf_gpio.h>
 
 #define TX_BUF_DIM          1000
 #define BOOT_TIME        30 //ms 15ms minimum 
 #define LSM6DSL_ADDR 0x6a
 #define ZEPHYR_USER_NODE DT_PATH(zephyr_user)
 #define fifo_pattern 3 //3x 16 bit for only the accelometer
-#define FIFO_BUFFER_LENGTH 675 //2046max /3 byte per sample samples /26hz =27sec
+#define FIFO_BUFFER_LENGTH 675 //2046max /3 byte per sample samples /12hz5 =54sec
 
 BUILD_ASSERT(FIFO_BUFFER_LENGTH % fifo_pattern == 0, "FIFO_BUFFER_LENGTH should be devisible by fifo_pattern");
 
@@ -39,23 +41,30 @@ static axis3bit16_t data_raw_acceleration;
 void lsm6dsl_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins);
 
 static void lsm6dsl_data_handler(struct k_work *work);
-K_WORK_DEFINE(lsm6dsl_proces, lsm6dsl_data_handler);
+K_WORK_DELAYABLE_DEFINE(lsm6dsl_proces, lsm6dsl_data_handler);
 
 
 
+
+    // // Configure the pin as input with pull-up
+    // nrf_gpio_cfg_input(signal.pin, NRF_GPIO_PIN_PULLDOWN);
+
+    // // Configure the pin to sense a low level (falling edge)
+    // nrf_gpio_cfg_sense_set(signal.pin, NRF_GPIO_PIN_SENSE_HIGH);
 void attachinterrupt(void) {
-	
+
 	__ASSERT(device_is_ready(signal.port), "custom device not ready");
 	if(gpio_pin_configure_dt(&signal, GPIO_INPUT)) {
     LOG_ERR("error configure signalgpio");
   }
+
 	if(gpio_pin_interrupt_configure_dt(&signal, GPIO_INT_EDGE_TO_ACTIVE)) {
     LOG_ERR("error configure interrupt signalgpio");
   };
 	gpio_init_callback(&lsm6dsl_interrupt, lsm6dsl_isr, BIT(signal.pin));
 	if(gpio_add_callback(signal.port, &lsm6dsl_interrupt)) {
     LOG_ERR("callback for interrupt not set");
-  };	
+ };
 }
 
 /* Private functions ---------------------------------------------------------*/
@@ -70,7 +79,7 @@ static void platform_init(void);
 
 void lsm6dsl_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins) {  
   LOG_INF("isr given");
-  k_work_submit(&lsm6dsl_proces);
+  k_work_schedule(&lsm6dsl_proces, K_NO_WAIT); 
 }
 
 struct xlData {
@@ -116,15 +125,15 @@ int lsm6dsl_init(struct storage_module *storage)
   lsm6dsl_xl_full_scale_set(&dev_ctx, LSM6DSL_2g);
   lsm6dsl_xl_reference_mode_set(&dev_ctx, PROPERTY_DISABLE);
   lsm6dsl_fifo_xl_batch_set(&dev_ctx, LSM6DSL_FIFO_XL_NO_DEC);
-  lsm6dsl_fifo_gy_batch_set(&dev_ctx, LSM6DSL_FIFO_GY_DISABLE);
+  lsm6dsl_fifo_gy_batch_set(&dev_ctx, LSM6DSL_FIFO_GY_DISABLE);  
   lsm6dsl_fifo_watermark_set(&dev_ctx, FIFO_BUFFER_LENGTH*fifo_pattern);
-  lsm6dsl_fifo_write_trigger_set(&dev_ctx, LSM6DSL_TRG_XL_GY_DRDY);
+  //lsm6dsl_fifo_write_trigger_set(&dev_ctx, LSM6DSL_TRG_XL_GY_DRDY);
   lsm6dsl_den_mode_set(&dev_ctx, LSM6DSL_EDGE_TRIGGER);
-  lsm6dsl_fifo_data_rate_set(&dev_ctx, LSM6DSL_FIFO_1k66Hz); //12Hz5
+  lsm6dsl_fifo_data_rate_set(&dev_ctx, LSM6DSL_FIFO_12Hz5); //12Hz5
   lsm6dsl_rounding_mode_set(&dev_ctx, LSM6DSL_ROUND_XL);
-  lsm6dsl_xl_data_rate_set(&dev_ctx, LSM6DSL_XL_ODR_6k66Hz);  //52Hz
-  lsm6dsl_xl_hp_bandwidth_set(&dev_ctx, LSM6DSL_XL_HP_ODR_DIV_4);  
-  
+  lsm6dsl_xl_data_rate_set(&dev_ctx, LSM6DSL_XL_ODR_52Hz);  //52Hz
+  lsm6dsl_xl_hp_bandwidth_set(&dev_ctx, LSM6DSL_XL_HP_ODR_DIV_4);    
+
   lsm6dsl_int1_route_t intset1 = { .int1_fth = 1};
   lsm6dsl_pin_int1_route_set(&dev_ctx, intset1); 
   
@@ -134,6 +143,7 @@ int lsm6dsl_init(struct storage_module *storage)
 
 static void lsm6dsl_data_handler(struct k_work *work)
 {
+  LOG_INF("handler started");
   uint16_t num = 0;
   uint32_t counter = 0;
   
@@ -142,6 +152,7 @@ static void lsm6dsl_data_handler(struct k_work *work)
   memset(data_raw_acceleration.u8bit, 0x00, 3*sizeof(int16_t));
 
   //determine amount of entries in fifo
+  //todo: sometimes this value seems to be zero.
   lsm6dsl_fifo_data_level_get(&dev_ctx, &num);
   
   LOG_INF("numvalues %d", (int)num);
@@ -161,7 +172,7 @@ static void lsm6dsl_data_handler(struct k_work *work)
   LOG_INF("average: %4.2f\t%4.2f\t%4.2f", average_xl.x, average_xl.y, average_xl.z);
 
   float vector = sqrt(pow(average_xl.x,2)+pow(average_xl.y,2)+pow(average_xl.z,2));
-  LOG_INF("average vector = sqrt(a^2+b^2+c^2) = %4.2f", vector);
+  LOG_INF("average) = %4.2f", vector);
   
   storage_m->store_tracked(vector);
 }
@@ -224,7 +235,4 @@ static void platform_delay(uint32_t ms)
 static void platform_init(void)
 {
 	i2c = DEVICE_DT_GET(DT_NODELABEL(i2c0));
-	__ASSERT(device_is_ready(i2c), "max30102 device not ready");
-
-  
 }

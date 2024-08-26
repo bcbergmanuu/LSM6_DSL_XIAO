@@ -1,6 +1,7 @@
 ![testing](https://github.com/bcbergmanuu/LSM6_DSL_XIAO/blob/master/assets/testboard.jpg?raw=true)
 
 todo:
+-  sometimes num value lsm6 0: bug
 -  bluetooth download all data (protobuf)
 -  bluetooth battery info
 -  bluetooth time service

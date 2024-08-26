@@ -1,22 +1,12 @@
 / {
     zephyr,user {
-        signal-gpios = <&gpio0 11 GPIO_PULL_UP>;
+        signal-gpios = <&gpio0 11 GPIO_ACTIVE_HIGH>;
     };
 
     chosen {
         nordic,pm-ext-flash = &p25q16h;
     };
-
-    aliases {
-        rtcbb = &rtc0;
-    };
 };
-
-// &zephyr_udc0 {
-// 	cdc_acm_uart0 {
-// 		compatible = "zephyr,cdc-acm-uart";
-// 	};
-// };
 
 &i2c0 {	
     lsm6ds3tr_c: lsm6ds3tr-c@6a {
@@ -24,6 +14,26 @@
     };
 };
 
-&rtc0 {
-    status = "okay";
+&uart0 {
+    status = "disabled";
+};
+
+&pwm0 {
+    status = "disabled"; 
+};
+
+&spi2 {
+    status = "disabled";
+};
+
+&i2c1 {
+    status = "disabled";
+};
+
+&ieee802154 {
+    status = "disabled";
+};
+
+&usbd {
+    status = "disabled";
 };
