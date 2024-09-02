@@ -22,105 +22,122 @@
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/bluetooth/gatt.h>
 
-#include <zephyr/bluetooth/services/ias.h>
-
 #include <zephyr/logging/log.h>
-
-
-#include "cts.h"
+#include "storage_nvs.h"
 
 LOG_MODULE_REGISTER(bluetooth_m, CONFIG_LOG_DEFAULT_LEVEL);
+#define AES_KEY_SIZE 16 // AES-128
+#define AES_BLOCK_SIZE 16
 
+void ble_send_passcode(struct k_work *work);
+K_WORK_DEFINE(ble_passcode_worker, ble_send_passcode);
 
-/* Custom Service for readout motion */
-#define BT_UUID_CUSTOM_SERVICE_VAL \
-	BT_UUID_128_ENCODE(0xa6c47c93, 0x8a09, 0x4ca5, 0x976e, 0xde7b871f11f0)
+//custom service
+static struct bt_uuid_128 motiondata_prop = BT_UUID_INIT_128(
+	BT_UUID_128_ENCODE(0xa6c47c93, 0x8a09, 0x4ca5, 0x976e, 0xde7b871f11f0));
 
-static struct bt_uuid_128 motiondatauuid = BT_UUID_INIT_128(
-	BT_UUID_CUSTOM_SERVICE_VAL);
-
-//readout variable
-static struct bt_uuid_128 current_item_uuid = BT_UUID_INIT_128(
+//ble key
+static struct bt_uuid_128 ble_pw_prop = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0xd97b1503, 0xa25c, 0x4295, 0xbd21, 0xf96823d91552));
 
-// static struct bt_uuid_128 vnd_auth_uuid = BT_UUID_INIT_128(
-// 	BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcdef2));
+//unique device
+static struct bt_uuid_128 ble_device_identifier_prop = BT_UUID_INIT_128(
+	BT_UUID_128_ENCODE(0x56a332cc, 0x0379, 0x497e, 0xbd2d, 0xe778c69badd6));
 
-//#define VND_MAX_LEN 20
+//current memory position
+static struct bt_uuid_128 ble_memory_position_prop = BT_UUID_INIT_128(
+	BT_UUID_128_ENCODE(0x84b45135, 0x170b, 0x4d03, 0x92b6, 0x386d7bff160d));
 
-static uint8_t vnd_value[10 + 1] = { 'V', 'e', 'n', 'd', 'o', 'r'};
-//static uint8_t vnd_auth_value[VND_MAX_LEN + 1] = { 'V', 'e', 'n', 'd', 'o', 'r'};
-//static uint8_t vnd_wwr_value[VND_MAX_LEN + 1] = { 'V', 'e', 'n', 'd', 'o', 'r' };
+//accelometer data
+static struct bt_uuid_128 ble_accelometer_data_prop = BT_UUID_INIT_128(
+	BT_UUID_128_ENCODE(0x54ea5a09, 0x97d5, 0x48ab, 0xbaf4, 0x007e9d7a45ff));
+
+// static uint8_t accelometer_result_buff[sizeof(struct fifo_pack)];
+// static ssize_t read_accelometer_result(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+// 			void *buf, uint16_t len, uint16_t offset)
+// {
+// 	uint16_t mem_pos = 0;
+// 	get_current_storage_id(&mem_pos);
+// 	memcpy(&current_memoryPosition_buff, &mem_pos, sizeof(uint16_t));
+
+// 	const uint8_t *value = attr->user_data;	
+
+// 	return bt_gatt_attr_read(conn, attr, buf, len, offset, value, sizeof(current_memoryPosition_buff));
+// }
+
+static uint8_t current_memoryPosition_buff[2];
+static ssize_t read_memory_position(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+			void *buf, uint16_t len, uint16_t offset)
+{
+	uint16_t mem_pos = 0;
+	get_current_storage_id(&mem_pos);
+	memcpy(&current_memoryPosition_buff, &mem_pos, sizeof(uint16_t));
+
+	const uint8_t *value = attr->user_data;	
+
+	return bt_gatt_attr_read(conn, attr, buf, len, offset, value, sizeof(current_memoryPosition_buff));
+}
+
+static ssize_t write_memory_position(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+ 			 const void *buf, uint16_t len, uint16_t offset,
+ 			 uint8_t flags) {
+
+ 	uint8_t *value = attr->user_data;
+
+	if (offset + len > sizeof(current_memoryPosition_buff)) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+	}
+	memcpy(value + offset, buf, len);
+
+	uint16_t memory_position = 0;
+	memcpy(&memory_position, value, sizeof(uint16_t));
+	write_uniqueIdentifier(memory_position);
+	
+ 	return len;
+}
+
+
+static uint8_t ble_passcode_buff[4];
 
 static ssize_t read_current_item(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 			void *buf, uint16_t len, uint16_t offset)
 {
-	const char *value = attr->user_data;
+	const uint8_t *value = attr->user_data;	
 
-	return bt_gatt_attr_read(conn, attr, buf, len, offset, value,
-				 strlen(value));
+	return bt_gatt_attr_read(conn, attr, buf, len, offset, value, sizeof(ble_passcode_buff));
 }
 
-static ssize_t write_current_item(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-			 const void *buf, uint16_t len, uint16_t offset,
-			 uint8_t flags)
-{
-	uint8_t *value = attr->user_data;
+static uint8_t uniqueIdentifier_value[sizeof(uint16_t)];
 
-	if (0) {
+static ssize_t read_identifier(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+			void *buf, uint16_t len, uint16_t offset) {
+
+	uint16_t uniqueId = 0;
+	read_uniqueidentifier(&uniqueId);
+	memcpy(&uniqueIdentifier_value, &uniqueId, sizeof(uint16_t));
+
+	const uint8_t *value = attr->user_data;	
+
+	return bt_gatt_attr_read(conn, attr, buf, len, offset, value, sizeof(uniqueIdentifier_value));
+}
+
+static ssize_t write_identifier(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+ 			 const void *buf, uint16_t len, uint16_t offset,
+ 			 uint8_t flags) {
+
+ 	uint8_t *value = attr->user_data;
+
+	if (offset + len > sizeof(uniqueIdentifier_value)) {
 		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
 	}
-
 	memcpy(value + offset, buf, len);
-	//value[offset + len] = 0;
-	LOG_INF("got value offset: %d, length: %d", offset, len);
 
-	return len;
+	uint16_t uniqueId = 0;
+	memcpy(&uniqueId, value, sizeof(uint16_t));
+	write_uniqueIdentifier(uniqueId);
+	
+ 	return len;
 }
-
-//static uint8_t simulate_vnd;
-
-static void vnd_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
-{
-	//simulate_vnd = (value == BT_GATT_CCC_INDICATE) ? 1 : 0;
-}
-
-// #define VND_LONG_MAX_LEN 74
-// static uint8_t vnd_long_value[VND_LONG_MAX_LEN + 1] = {
-// 		  'V', 'e', 'n', 'd', 'o', 'r', ' ', 'd', 'a', 't', 'a', '1',
-// 		  'V', 'e', 'n', 'd', 'o', 'r', ' ', 'd', 'a', 't', 'a', '2',
-// 		  'V', 'e', 'n', 'd', 'o', 'r', ' ', 'd', 'a', 't', 'a', '3',
-// 		  'V', 'e', 'n', 'd', 'o', 'r', ' ', 'd', 'a', 't', 'a', '4',
-// 		  'V', 'e', 'n', 'd', 'o', 'r', ' ', 'd', 'a', 't', 'a', '5',
-// 		  'V', 'e', 'n', 'd', 'o', 'r', ' ', 'd', 'a', 't', 'a', '6',
-// 		  '.', ' ' };
-
-// static ssize_t write_long_vnd(struct bt_conn *conn,
-// 			      const struct bt_gatt_attr *attr, const void *buf,
-// 			      uint16_t len, uint16_t offset, uint8_t flags)
-// {
-// 	uint8_t *value = attr->user_data;
-
-// 	if (flags & BT_GATT_WRITE_FLAG_PREPARE) {
-// 		return 0;
-// 	}
-
-// 	if (0) {
-// 		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
-// 	}
-
-// 	memcpy(value + offset, buf, len);
-// 	value[offset + len] = 0;
-
-// 	return len;
-// }
-
-// static const struct bt_uuid_128 vnd_long_uuid = BT_UUID_INIT_128(
-// 	BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcdef3));
-
-// static struct bt_gatt_cep vnd_long_cep = {
-// 	.properties = BT_GATT_CEP_RELIABLE_WRITE,
-// };
 
 //static int signed_value;
 
@@ -148,58 +165,31 @@ static void vnd_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
 // 	return len;
 // }
 
-// static const struct bt_uuid_128 vnd_signed_uuid = BT_UUID_INIT_128(
-// 	BT_UUID_128_ENCODE(0x13345678, 0x1234, 0x5678, 0x1334, 0x56789abcdef3));
+static uint8_t notify_ble_passcode_on = 0;
 
-// static const struct bt_uuid_128 vnd_write_cmd_uuid = BT_UUID_INIT_128(
-// 	BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcdef4));
 
-// static ssize_t write_without_rsp_vnd(struct bt_conn *conn,
-// 				     const struct bt_gatt_attr *attr,
-// 				     const void *buf, uint16_t len, uint16_t offset,
-// 				     uint8_t flags)
-// {
-// 	uint8_t *value = attr->user_data;
-
-// 	if (!(flags & BT_GATT_WRITE_FLAG_CMD)) {
-// 		/* Write Request received. Reject it since this Characteristic
-// 		 * only accepts Write Without Response.
-// 		 */
-// 		return BT_GATT_ERR(BT_ATT_ERR_WRITE_REQ_REJECTED);
-// 	}
-
-// 	if (0) {
-// 		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
-// 	}
-
-// 	memcpy(value + offset, buf, len);
-// 	value[offset + len] = 0;
-
-// 	return len;
-// }
+static void ble_passcode_notify_changed(const struct bt_gatt_attr *attr, uint16_t value) {
+	notify_ble_passcode_on = (value == BT_GATT_CCC_NOTIFY) ? 1 : 0;
+}
 
 /* Motion readout primary Service Declaration */
-BT_GATT_SERVICE_DEFINE(vnd_svc,
-	BT_GATT_PRIMARY_SERVICE(&motiondatauuid),
-	BT_GATT_CHARACTERISTIC(&current_item_uuid.uuid,
-			       BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE |
-			       BT_GATT_CHRC_INDICATE,
-			       BT_GATT_PERM_READ |
-			       BT_GATT_PERM_WRITE,
-			       read_current_item, write_current_item, vnd_value),
-	BT_GATT_CCC(vnd_ccc_cfg_changed,
-		    BT_GATT_PERM_READ | BT_GATT_PERM_WRITE_ENCRYPT)
-	// BT_GATT_CHARACTERISTIC(&vnd_auth_uuid.uuid,
-	// 		       BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
-	// 		       BT_GATT_PERM_READ_AUTHEN |
-	// 		       BT_GATT_PERM_WRITE_AUTHEN,
-	// 		       read_vnd, write_vnd, vnd_auth_value),
-	// BT_GATT_CHARACTERISTIC(&vnd_long_uuid.uuid, BT_GATT_CHRC_READ |
-	// 		       BT_GATT_CHRC_WRITE | BT_GATT_CHRC_EXT_PROP,
-	// 		       BT_GATT_PERM_READ | BT_GATT_PERM_WRITE |
-	// 		       BT_GATT_PERM_PREPARE_WRITE,
-	// 		       read_vnd, write_long_vnd, &vnd_long_value),
-	// BT_GATT_CEP(&vnd_long_cep),
+BT_GATT_SERVICE_DEFINE(motion_svc,
+	BT_GATT_PRIMARY_SERVICE(&motiondata_prop),
+	BT_GATT_CHARACTERISTIC(&ble_pw_prop.uuid,
+			       BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
+			       BT_GATT_PERM_READ,
+			       read_current_item, NULL, ble_passcode_buff),	
+	BT_GATT_CCC(ble_passcode_notify_changed,   BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+	
+	BT_GATT_CHARACTERISTIC(&ble_device_identifier_prop.uuid,
+			       BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
+			       BT_GATT_PERM_READ | BT_GATT_PERM_WRITE_AUTHEN,
+			       read_identifier, write_identifier, uniqueIdentifier_value),
+	BT_GATT_CHARACTERISTIC(&ble_memory_position_prop.uuid, BT_GATT_CHRC_READ |
+	 		       BT_GATT_CHRC_WRITE | BT_GATT_CHRC_WRITE,
+	 		       BT_GATT_PERM_READ | BT_GATT_PERM_WRITE_AUTHEN,	 		       
+	 		       read_memory_position, write_memory_position, current_memoryPosition_buff),
+	//BT_GATT_CEP(&vnd_long_cep),
 	// BT_GATT_CHARACTERISTIC(&vnd_signed_uuid.uuid, BT_GATT_CHRC_READ |
 	// 		       BT_GATT_CHRC_WRITE | BT_GATT_CHRC_AUTH,
 	// 		       BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
@@ -210,14 +200,21 @@ BT_GATT_SERVICE_DEFINE(vnd_svc,
 	// 		       write_without_rsp_vnd, &vnd_wwr_value),
 );
 
-//advertising data:
-static const struct bt_data ad[] = {
-	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
-	BT_DATA_BYTES(BT_DATA_UUID16_ALL,
-		      BT_UUID_16_ENCODE(BT_UUID_BAS_VAL),
-		      BT_UUID_16_ENCODE(BT_UUID_CTS_VAL)),
-	BT_DATA_BYTES(BT_DATA_UUID128_ALL, BT_UUID_CUSTOM_SERVICE_VAL),
-};
+
+
+void ble_send_passcode(struct k_work *work) {				
+	
+	bt_gatt_notify(NULL, &motion_svc.attrs[1], ble_passcode_buff, sizeof(ble_passcode_buff));	
+}
+
+
+	const struct bt_data ad[] = {
+			BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+			BT_DATA_BYTES(BT_DATA_UUID16_ALL, BT_UUID_16_ENCODE(BT_UUID_BAS_VAL), BT_UUID_16_ENCODE(BT_UUID_CTS_VAL)),	};
+			//BT_DATA_BYTES(BT_DATA_UUID128_ALL, motiondata_prop),
+// 			BT_DATA(BT_DATA_MANUFACTURER_DATA, uniqueId, sizeof(ui))
+// 	};
+// }
 
 void mtu_updated(struct bt_conn *conn, uint16_t tx, uint16_t rx)
 {
@@ -242,35 +239,16 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	LOG_INF("Disconnected (reason 0x%02x)\n", reason);
 }
 
-static void alert_stop(void)
-{
-	LOG_INF("Alert stopped\n");
-}
-
-static void alert_start(void)
-{
-	LOG_INF("Mild alert started\n");
-}
-
-static void alert_high_start(void)
-{
-	LOG_INF("High alert started\n");
-}
-
 BT_CONN_CB_DEFINE(conn_callbacks) = {
 	.connected = connected,
-	.disconnected = disconnected,
+	.disconnected = disconnected
 };
 
-BT_IAS_CB_DEFINE(ias_callbacks) = {
-	.no_alert = alert_stop,
-	.mild_alert = alert_start,
-	.high_alert = alert_high_start,
-};
+
 
 #define BT_CONN_CUSTOM BT_LE_ADV_PARAM(BT_LE_ADV_OPT_CONNECTABLE | \
 					    BT_LE_ADV_OPT_USE_NAME, \
-					    12288, 16384, NULL) //10.2 seconds max
+					    1024, 2048, NULL) //2 seconds
 
 static void bt_ready(void)
 {
@@ -298,6 +276,12 @@ static void auth_passkey_display(struct bt_conn *conn, unsigned int passkey)
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
 	LOG_INF("Passkey for %s: %06u\n", addr, passkey);
+	
+	memcpy(ble_passcode_buff, (uint8_t*)&passkey, (sizeof(ble_passcode_buff)));	
+
+	k_work_submit(&ble_passcode_worker);
+
+	bt_conn_auth_passkey_confirm(conn);
 }
 
 static void auth_cancel(struct bt_conn *conn)
@@ -309,18 +293,17 @@ static void auth_cancel(struct bt_conn *conn)
 	LOG_INF("Pairing cancelled: %s\n", addr);
 }
 
+
 static struct bt_conn_auth_cb auth_cb_display = {
 	.passkey_display = auth_passkey_display,
 	.passkey_entry = NULL,
 	.cancel = auth_cancel,
+	.passkey_confirm = NULL,	
 };
 
 
-
-int ble_load(void)
-{
-	struct bt_gatt_attr *vnd_ind_attr;
-	char str[BT_UUID_STR_LEN];
+int ble_load()
+{		
 	int err;
 
 	err = bt_enable(NULL);
@@ -333,11 +316,9 @@ int ble_load(void)
 
 	bt_gatt_cb_register(&gatt_callbacks);
 	bt_conn_auth_cb_register(&auth_cb_display);
-
-	vnd_ind_attr = bt_gatt_find_by_uuid(vnd_svc.attrs, vnd_svc.attr_count,
-					    &current_item_uuid.uuid);
-	bt_uuid_to_str(&current_item_uuid.uuid, str, sizeof(str));
-	LOG_INF("Indicate VND attr %p (UUID %s)\n", vnd_ind_attr, str);	
 	
-	return 0;
+	return err;
 }
+
+
+SYS_INIT(ble_load, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);

@@ -44,13 +44,6 @@ static void lsm6dsl_data_handler(struct k_work *work);
 K_WORK_DELAYABLE_DEFINE(lsm6dsl_proces, lsm6dsl_data_handler);
 
 
-
-
-    // // Configure the pin as input with pull-up
-    // nrf_gpio_cfg_input(signal.pin, NRF_GPIO_PIN_PULLDOWN);
-
-    // // Configure the pin to sense a low level (falling edge)
-    // nrf_gpio_cfg_sense_set(signal.pin, NRF_GPIO_PIN_SENSE_HIGH);
 void attachinterrupt(void) {
 
 	__ASSERT(device_is_ready(signal.port), "custom device not ready");
@@ -58,7 +51,7 @@ void attachinterrupt(void) {
     LOG_ERR("error configure signalgpio");
   }
 
-	if(gpio_pin_interrupt_configure_dt(&signal, GPIO_INT_EDGE_TO_ACTIVE)) {
+	if(gpio_pin_interrupt_configure_dt(&signal, GPIO_INT_EDGE_TO_ACTIVE)) {  
     LOG_ERR("error configure interrupt signalgpio");
   };
 	gpio_init_callback(&lsm6dsl_interrupt, lsm6dsl_isr, BIT(signal.pin));
@@ -78,7 +71,9 @@ static void platform_delay(uint32_t ms);
 static void platform_init(void);
 
 void lsm6dsl_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins) {  
+  //gpio_pin_interrupt_configure_dt(&signal, GPIO_INT_DISABLE);
   LOG_INF("isr given");
+
   k_work_schedule(&lsm6dsl_proces, K_NO_WAIT); 
 }
 
@@ -88,11 +83,11 @@ struct xlData {
     float z;
 };  
 
-struct storage_module *storage_m;
+//struct storage_module *storage_m;
 
-int lsm6dsl_init(struct storage_module *storage)
+int lsm6dsl_init(/*struct storage_module *storage */)
 {  
-  storage_m = storage;
+  //storage_m = storage;
   
   attachinterrupt();
   /* Initialize mems driver interface */  
@@ -128,22 +123,35 @@ int lsm6dsl_init(struct storage_module *storage)
   lsm6dsl_fifo_gy_batch_set(&dev_ctx, LSM6DSL_FIFO_GY_DISABLE);  
   lsm6dsl_fifo_watermark_set(&dev_ctx, FIFO_BUFFER_LENGTH*fifo_pattern);
   //lsm6dsl_fifo_write_trigger_set(&dev_ctx, LSM6DSL_TRG_XL_GY_DRDY);
-  lsm6dsl_den_mode_set(&dev_ctx, LSM6DSL_EDGE_TRIGGER);
+  lsm6dsl_den_mode_set(&dev_ctx, LSM6DSL_LEVEL_LETCHED);
   lsm6dsl_fifo_data_rate_set(&dev_ctx, LSM6DSL_FIFO_12Hz5); //12Hz5
   lsm6dsl_rounding_mode_set(&dev_ctx, LSM6DSL_ROUND_XL);
   lsm6dsl_xl_data_rate_set(&dev_ctx, LSM6DSL_XL_ODR_52Hz);  //52Hz
   lsm6dsl_xl_hp_bandwidth_set(&dev_ctx, LSM6DSL_XL_HP_ODR_DIV_4);    
 
-  lsm6dsl_int1_route_t intset1 = { .int1_fth = 1};
+//exp
+  // lsm6dsl_tilt_sens_set(&dev_ctx, 1);  
+  // uint8_t val = 0;
+  // LOG_INF("trigger received:%d", val);
+//end exp
+
+  lsm6dsl_int1_route_t intset1 = { .int1_fth = 1, /* .int1_tilt = 1 */};
   lsm6dsl_pin_int1_route_set(&dev_ctx, intset1); 
   
   LOG_INF("settigs completed");
   return 0;
 }
 
-static void lsm6dsl_data_handler(struct k_work *work)
-{
-  LOG_INF("handler started");
+int32_t testtilt(const stmdev_ctx_t *ctx, uint8_t *val) {
+  uint32_t ret = 0;
+  lsm6dsl_func_src1_t result_trig;
+  ret |= lsm6dsl_read_reg(ctx, LSM6DSL_FUNC_SRC1, (uint8_t *)&result_trig, 1);
+  *val = result_trig.tilt_ia;
+  return ret;
+}
+
+static int fifo_threashold_handler(void) {
+  int ret = 0;
   uint16_t num = 0;
   uint32_t counter = 0;
   
@@ -151,14 +159,15 @@ static void lsm6dsl_data_handler(struct k_work *work)
   
   memset(data_raw_acceleration.u8bit, 0x00, 3*sizeof(int16_t));
 
-  //determine amount of entries in fifo
-  //todo: sometimes this value seems to be zero.
-  lsm6dsl_fifo_data_level_get(&dev_ctx, &num);
+  ret |= lsm6dsl_fifo_data_level_get(&dev_ctx, &num);
   
   LOG_INF("numvalues %d", (int)num);
-
+  if(num == 0){
+    return -1;
+    LOG_ERR("triggered but no data?!");
+  }
   for(int x = 0; x <= (num-fifo_pattern); x+=fifo_pattern) {        
-    
+      
     lsm6dsl_fifo_raw_data_get(&dev_ctx, data_raw_acceleration.u8bit, fifo_pattern * sizeof(int16_t));                                                          
 
     average_xl.x += lsm6dsl_from_fs2g_to_mg(data_raw_acceleration.i16bit[0]);
@@ -174,7 +183,24 @@ static void lsm6dsl_data_handler(struct k_work *work)
   float vector = sqrt(pow(average_xl.x,2)+pow(average_xl.y,2)+pow(average_xl.z,2));
   LOG_INF("average) = %4.2f", vector);
   
-  storage_m->store_tracked(vector);
+  store_tracked(vector);
+  return ret;
+}
+
+static void lsm6dsl_data_handler(struct k_work *work)
+{  
+  uint8_t val = 0;
+  testtilt(&dev_ctx, &val);
+  
+  if(val) {
+    LOG_INF("TILT.IA trigger received:%d", val);    
+  } else {
+    if(fifo_threashold_handler()) {
+      LOG_ERR("error handling fifo");
+    }
+  }
+    
+  //gpio_pin_interrupt_configure_dt(&signal, GPIO_INT_LEVEL_HIGH);
 }
 
 /*
@@ -236,3 +262,5 @@ static void platform_init(void)
 {
 	i2c = DEVICE_DT_GET(DT_NODELABEL(i2c0));
 }
+
+SYS_INIT(lsm6dsl_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);

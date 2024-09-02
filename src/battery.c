@@ -23,34 +23,27 @@
 #include <zephyr/drivers/adc.h>
 #include <zephyr/logging/log.h>
 
-#include <zephyr/pm/device.h>
-
 LOG_MODULE_REGISTER(battery, LOG_LEVEL_INF);
-
-
 
 static void update_ble_handler(struct k_work *work);
 
 K_WORK_DELAYABLE_DEFINE(ble_send_work, update_ble_handler);
 
-#define BAS_UPDATE_FREQUENCY 10
-#define GPIO_BATTERY_CHARGE_SPEED 13
-#define GPIO_BATTERY_CHARGING_ENABLE 17
-#define GPIO_BATTERY_READ_ENABLE 14
 
-// Change this to a higher number for better averages
-// Note that increasing this holds up the thread / ADC for longer.
-#define ADC_TOTAL_SAMPLES 10
+static int16_t sample_buffer[ADC_TOTAL_SAMPLES];
 
-//--------------------------------------------------------------
-// ADC setup
+static struct adc_sequence_options options = {
+    .extra_samplings = ADC_TOTAL_SAMPLES - 1,
+    .interval_us = ADC_SAMPLE_INTERVAL_US,
+};
 
-#define ADC_RESOLUTION 12
-#define ADC_CHANNEL 7
-#define ADC_PORT SAADC_CH_PSELP_PSELP_AnalogInput7 // AIN7
-#define ADC_REFERENCE ADC_REF_INTERNAL             // 0.6V
-#define ADC_GAIN ADC_GAIN_1_6                      // ADC REFERENCE * 6 = 3.6V
-#define ADC_SAMPLE_INTERVAL_US 500                 // Time between each sample
+static struct adc_sequence sequence = {
+    .options = &options,
+    .channels = BIT(ADC_CHANNEL),
+    .buffer = sample_buffer,
+    .buffer_size = sizeof(sample_buffer),
+    .resolution = ADC_RESOLUTION,
+};
 
 static struct adc_channel_cfg channel_7_cfg = {
     .gain = ADC_GAIN,
@@ -62,40 +55,14 @@ static struct adc_channel_cfg channel_7_cfg = {
 #endif
 };
 
-static struct adc_sequence_options options = {
-    .extra_samplings = ADC_TOTAL_SAMPLES - 1,
-    .interval_us = ADC_SAMPLE_INTERVAL_US,
-};
-
-static int16_t sample_buffer[ADC_TOTAL_SAMPLES];
-static struct adc_sequence sequence = {
-    .options = &options,
-    .channels = BIT(ADC_CHANNEL),
-    .buffer = sample_buffer,
-    .buffer_size = sizeof(sample_buffer),
-    .resolution = ADC_RESOLUTION,
-};
-
-//--------------------------------------------------------------
-
 // MCU peripherals for reading battery voltage
 static const struct device *gpio_battery_dev = DEVICE_DT_GET(DT_NODELABEL(gpio0));
 static const struct device *adc_battery_dev = DEVICE_DT_GET(DT_NODELABEL(adc));
 
 // Charging interrupt
-//static struct gpio_callback charging_callback;
-
-// Callbacks for change in charging and when a battery sample is ready.
 
 static K_MUTEX_DEFINE(battery_mut);
 
-typedef struct
-{
-    uint16_t voltage;
-    uint8_t percentage;
-} BatteryState;
-
-#define BATTERY_STATES_COUNT 12
 // Assuming LiPo battery.
 // For better accuracy, use your battery's datasheet.
 static BatteryState battery_states[BATTERY_STATES_COUNT] = {
@@ -125,9 +92,6 @@ int battery_get_millivolt(uint16_t *battery_millivolt)
     int adc_mv = 0;
     
     ret |= k_mutex_lock(&battery_mut, K_FOREVER);
-
-    ret |= pm_device_action_run(adc_battery_dev, PM_DEVICE_ACTION_RESUME);
-	
     ret |= gpio_pin_set(gpio_battery_dev, GPIO_BATTERY_READ_ENABLE, 1);
     ret |= adc_read(adc_battery_dev, &sequence);
     uint16_t adc_vref = adc_ref_internal(adc_battery_dev);
@@ -146,7 +110,6 @@ int battery_get_millivolt(uint16_t *battery_millivolt)
     *battery_millivolt = adc_mv * ((R1 + R2) / R2);
 
     ret |= gpio_pin_set(gpio_battery_dev, GPIO_BATTERY_READ_ENABLE, 0);
-    ret |= pm_device_action_run(adc_battery_dev, PM_DEVICE_ACTION_SUSPEND);
 
     k_mutex_unlock(&battery_mut);
 
@@ -191,25 +154,23 @@ static void update_ble_handler(struct k_work *work) {
     battery_get_percentage(&percentage, millivolt);
     bt_bas_set_battery_level(percentage);
     LOG_INF("update_ble mV %d, percentage %d", millivolt, percentage);
-    k_work_schedule(&ble_send_work, K_SECONDS(BAS_UPDATE_FREQUENCY));
+    k_work_schedule(&ble_send_work, K_MINUTES(BAS_UPDATE_FREQUENCY));
 }
 
 int battery_init()
 {
     int ret = 0;
-    
 
-    ret |= adc_channel_setup(adc_battery_dev, &channel_7_cfg);
-    //ret |= pm_device_action_run(adc_battery_dev, PM_DEVICE_ACTION_SUSPEND); does not work
-
-    //todo: to enable charging, a pull down/up on pin 17 might be required. (13k)
+    ret |= adc_channel_setup(adc_battery_dev, &channel_7_cfg);        
     ret |= gpio_pin_configure(gpio_battery_dev, GPIO_BATTERY_READ_ENABLE, GPIO_OUTPUT | GPIO_ACTIVE_LOW);
     ret |= gpio_pin_configure(gpio_battery_dev, GPIO_BATTERY_CHARGE_SPEED, GPIO_OUTPUT | GPIO_ACTIVE_LOW);
     ret |= gpio_pin_set(gpio_battery_dev, GPIO_BATTERY_CHARGE_SPEED, 1); // FAST charge 100mA
     
     LOG_INF("Initialized");
     
-    k_work_schedule(&ble_send_work, K_SECONDS(BAS_UPDATE_FREQUENCY));
+    k_work_schedule(&ble_send_work, K_MINUTES(BAS_UPDATE_FREQUENCY));
 
     return ret;
 }
+
+SYS_INIT(battery_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);

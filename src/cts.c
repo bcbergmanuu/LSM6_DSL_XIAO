@@ -22,12 +22,38 @@
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/bluetooth/gatt.h>
 
-static uint8_t ct[10];
-static uint8_t ct_update;
+#include <zephyr/posix/time.h>
+#include <zephyr/sys/timeutil.h>
+#include <zephyr/logging/log.h>
+
+//current time
+static uint8_t ct[sizeof(time_t)];
+
+LOG_MODULE_REGISTER(TIME_MODULE, CONFIG_LOG_DEFAULT_LEVEL);
+
+void ble_update_time(struct k_work *work);
+
+void timerElapsed(struct k_timer *timer_id);
+K_WORK_DEFINE(notifyCTS, ble_update_time);
+
+K_TIMER_DEFINE(update_time_timer, timerElapsed, NULL);
+
+// static int cts_init() {
+// 	return 0;
+// }
+void timerElapsed(struct k_timer *timer_id) {
+	k_work_submit(&notifyCTS);
+}
 
 static void ct_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
-	/* TODO: Handle value */
+
+	if(value) {
+		k_timer_start(&update_time_timer, K_SECONDS(1), K_SECONDS(1));
+
+	} else {
+		k_timer_stop(&update_time_timer);
+	}
 }
 
 static ssize_t read_ct(struct bt_conn *conn, const struct bt_gatt_attr *attr,
@@ -37,6 +63,16 @@ static ssize_t read_ct(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 
 	return bt_gatt_attr_read(conn, attr, buf, len, offset, value,
 				 sizeof(ct));
+}
+
+int settime(time_t current_time) {
+	int ret = 0;
+	struct timespec ts = {0};
+	ts.tv_sec = current_time;
+
+    ret |= clock_settime(CLOCK_REALTIME, &ts);
+	
+	return ret;
 }
 
 static ssize_t write_ct(struct bt_conn *conn, const struct bt_gatt_attr *attr,
@@ -50,9 +86,31 @@ static ssize_t write_ct(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 	}
 
 	memcpy(value + offset, buf, len);
-	ct_update = 1U;
+		
+	for(uint16_t i = 0; i<len; i++){
+		LOG_INF("received %i", value[i]);
+	}
+	time_t timeconstruct = 0;
+	memcpy(&timeconstruct, value, len);
+	
+	settime(timeconstruct);
+	print_current_time();
 
 	return len;
+}
+
+int print_current_time() {
+	
+    struct timespec ts = {0};      
+	
+	clock_gettime(CLOCK_REALTIME, &ts);
+	struct tm *current_time = gmtime(&ts.tv_sec);
+
+	LOG_INF("Current time: %04d-%02d-%02d %02d:%02d:%02d",
+			current_time->tm_year + 1900, current_time->tm_mon + 1, current_time->tm_mday,
+			current_time->tm_hour, current_time->tm_min, current_time->tm_sec);
+	
+	return 0;
 }
 
 /* Current Time Service Declaration */
@@ -64,3 +122,24 @@ BT_GATT_SERVICE_DEFINE(cts_cvs,
 			       read_ct, write_ct, ct),
 	BT_GATT_CCC(ct_ccc_cfg_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 );
+
+void ble_update_time(struct k_work *work)
+{
+    struct timespec ts = {
+        .tv_sec = 0,
+        .tv_nsec = 0,
+    };
+
+	clock_gettime(CLOCK_REALTIME, &ts);
+	LOG_INF("update time, current: %" PRId64 ", size %d" , ts.tv_sec, sizeof(time_t));
+	memcpy(&ct, &ts.tv_sec, sizeof(time_t));
+	
+	// struct bt_gatt_attr *cts_not_attr;
+	// cts_not_attr = bt_gatt_find_by_uuid(cts_cvs.attrs, cts_cvs.attr_count, BT_UUID_CTS_CURRENT_TIME);					
+	
+	bt_gatt_notify(NULL, &cts_cvs.attrs[1], ct, sizeof(ct));
+	
+}
+
+
+//SYS_INIT(cts_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
