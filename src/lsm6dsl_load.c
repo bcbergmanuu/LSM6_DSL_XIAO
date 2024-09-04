@@ -142,13 +142,13 @@ int lsm6dsl_init(/*struct storage_module *storage */)
   return 0;
 }
 
-int32_t testtilt(const stmdev_ctx_t *ctx, uint8_t *val) {
-  uint32_t ret = 0;
-  lsm6dsl_func_src1_t result_trig;
-  ret |= lsm6dsl_read_reg(ctx, LSM6DSL_FUNC_SRC1, (uint8_t *)&result_trig, 1);
-  *val = result_trig.tilt_ia;
-  return ret;
-}
+// static int32_t testtilt(const stmdev_ctx_t *ctx, uint8_t *val) {
+//   uint32_t ret = 0;
+//   lsm6dsl_func_src1_t result_trig;
+//   ret |= lsm6dsl_read_reg(ctx, LSM6DSL_FUNC_SRC1, (uint8_t *)&result_trig, 1);
+//   *val = result_trig.tilt_ia;
+//   return ret;
+// }
 
 static int fifo_threashold_handler(void) {
   int ret = 0;
@@ -189,16 +189,16 @@ static int fifo_threashold_handler(void) {
 
 static void lsm6dsl_data_handler(struct k_work *work)
 {  
-  uint8_t val = 0;
-  testtilt(&dev_ctx, &val);
+  //uint8_t val = 0;
+  //testtilt(&dev_ctx, &val);
   
-  if(val) {
-    LOG_INF("TILT.IA trigger received:%d", val);    
-  } else {
+  //if(val) {
+  //  LOG_INF("TILT.IA trigger received:%d", val);    
+  //} else {
     if(fifo_threashold_handler()) {
       LOG_ERR("error handling fifo");
     }
-  }
+  //}
     
   //gpio_pin_interrupt_configure_dt(&signal, GPIO_INT_LEVEL_HIGH);
 }

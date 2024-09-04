@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+import "nanopb.proto";
+
+message HourlyResult {
+    int64 UnixTime = 1;
+    repeated float AvgMinuteList = 2 [(nanopb).max_count = 60, (nanopb).fixed_count = true];
+}

@@ -1,9 +1,7 @@
-#ifdef __cplusplus
-extern "C" {
-#endif
+#ifndef CTS_LOAD_H
+#define CTS_LOAD_H
 
-void cts_init(void);
+int print_current_time();
 
-#ifdef __cplusplus
-}
+
 #endif

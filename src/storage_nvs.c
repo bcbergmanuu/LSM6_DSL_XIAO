@@ -90,7 +90,7 @@ int read_uniqueidentifier(uint16_t *identifier) {
 	return 0;
 }
 
-void init_storage() {	
+int init_storage(void) {	
 		
     int rc = 0;
 	rc |= init_internal_storage();
@@ -98,7 +98,7 @@ void init_storage() {
 	spi_flash_dev = DEVICE_DT_GET(DT_ALIAS(spi_flash0));	
 	if (!device_is_ready(spi_flash_dev)) {
 		LOG_ERR("%s: device not ready.\n", spi_flash_dev->name);
-		return;
+		return rc;
 	}
 	
     struct flash_pages_info info;
@@ -108,11 +108,11 @@ void init_storage() {
 	rc = flash_get_page_info_by_offs(spi_flash_dev, 0, &info);
 	if (rc) {
 		LOG_ERR("Unable to get page info\n");
-		return;
+		return rc;
 	}
-	
-	
-	flash_set_suspend();	
+		
+	rc |= flash_set_suspend();	
+	return rc;
 }
 
 //store one item in ram memory; for every 60 items flash will be written.
@@ -150,27 +150,27 @@ int load_tracked(uint16_t itemid, struct fifo_pack *vector_list) {
 void fifo_handler(void *) {
 	LOG_INF("fifo_handler thread initialized");
 	struct fifo_data_t *rx_value = {0};
-	static uint16_t storage_id = 0;
+	
 	static uint32_t fifo_counter = 0;		
 	struct fifo_pack fifo_packer ={.seconds_passed =0, .vector_n = {0}};			
 	
 	while(true) {				
-		
 		rx_value = k_fifo_get(&storage_fifo, K_FOREVER);			
 		k_free(rx_value);
 	
-		fifo_packer.vector_n[fifo_counter] = rx_value->fifo_buffer;
-						
+		fifo_packer.vector_n[fifo_counter] = rx_value->fifo_buffer;						
 		fifo_counter++;
 
 		if(fifo_counter >= FLASH_BUFFER_SIZE_NVS) {
-			fifo_counter = 0;  			
+			int ret =0;
+			
 			//set time for next packet to store
+			uint16_t storage_id;
+			ret |= get_current_storage_id(&storage_id);
 			struct timespec ts = {0};
 			clock_gettime(CLOCK_REALTIME, &ts);		
 			fifo_packer.seconds_passed = ts.tv_sec;
-
-			ssize_t ret =0;
+			
 			ret |= flash_set_resume();
 			ret |= flash_write(spi_flash_dev, storage_id * FLASH_PAGE_SIZE, &fifo_packer, sizeof(struct fifo_pack));
 			ret |= flash_set_suspend();
@@ -182,10 +182,12 @@ void fifo_handler(void *) {
 				nvs_write(&fs, NVS_CURRENT_STORAGE_ID, &storage_id, sizeof(uint16_t));
 				storage_id++; 
 			}							
+			fifo_counter = 0;  
 		}		
 	}
 }
 
 K_THREAD_DEFINE(fifohandler, 1024, fifo_handler, NULL, NULL, NULL, 8, 0, 0);
+
 
 SYS_INIT(init_storage, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);

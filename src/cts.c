@@ -25,6 +25,7 @@
 #include <zephyr/posix/time.h>
 #include <zephyr/sys/timeutil.h>
 #include <zephyr/logging/log.h>
+#include "cts.h"
 
 //current time
 static uint8_t ct[sizeof(time_t)];
@@ -38,9 +39,6 @@ K_WORK_DEFINE(notifyCTS, ble_update_time);
 
 K_TIMER_DEFINE(update_time_timer, timerElapsed, NULL);
 
-// static int cts_init() {
-// 	return 0;
-// }
 void timerElapsed(struct k_timer *timer_id) {
 	k_work_submit(&notifyCTS);
 }
