@@ -124,14 +124,18 @@ void store_tracked(float vector) {
 
 int set_current_storage_id(uint16_t itemid) {
 	int err = nvs_write(&fs, NVS_CURRENT_STORAGE_ID, &itemid, sizeof(uint16_t));
-	LOG_INF("nvs stored id: %d", itemid);
+	LOG_INF("nvs storage id set to: %d", itemid);
 	if (err < 0) return err; else return 0;
 }
 
 int get_current_storage_id(uint16_t *itemid) {
-	int err = nvs_read(&fs, NVS_CURRENT_STORAGE_ID, itemid, sizeof(uint16_t) < 0);
-	LOG_INF("nvs stored id: %d", *itemid);
-	if (err < 0) return err; else return 0;
+	int err = nvs_read(&fs, NVS_CURRENT_STORAGE_ID, itemid, sizeof(uint16_t));
+	if (err < 0) {
+		LOG_ERR("flash error");
+		return err;
+	}
+	LOG_INF("storage requisted current id: %d", *itemid);
+	return 0;
 }
 
 int load_tracked(uint16_t itemid, struct fifo_pack *vector_list) {
@@ -162,25 +166,27 @@ void fifo_handler(void *) {
 		fifo_counter++;
 
 		if(fifo_counter >= FLASH_BUFFER_SIZE_NVS) {
-			int ret =0;
+			int ret =0;			
+			uint16_t flash_position;
+			ret |= get_current_storage_id(&flash_position);
+			flash_position++; //store in next position
+			if(flash_position > 8192) flash_position = 0; //2MB page file 256 == 8192 items. When full start from beginning
+			
+			struct timespec ts = {0};
 			
 			//set time for next packet to store
-			uint16_t storage_id;
-			ret |= get_current_storage_id(&storage_id);
-			struct timespec ts = {0};
 			clock_gettime(CLOCK_REALTIME, &ts);		
 			fifo_packer.seconds_passed = ts.tv_sec;
 			
 			ret |= flash_set_resume();
-			ret |= flash_write(spi_flash_dev, storage_id * FLASH_PAGE_SIZE, &fifo_packer, sizeof(struct fifo_pack));
+			ret |= flash_write(spi_flash_dev, flash_position * FLASH_PAGE_SIZE, &fifo_packer, sizeof(struct fifo_pack));
 			ret |= flash_set_suspend();
 			if(ret < 0) {
-				LOG_ERR("could not write flash id: %d", storage_id);  	
+				LOG_ERR("could not write flash id: %d", flash_position);  	
 			}
 			else {
-				LOG_INF("stored at position %d", storage_id);
-				nvs_write(&fs, NVS_CURRENT_STORAGE_ID, &storage_id, sizeof(uint16_t));
-				storage_id++; 
+				LOG_INF("stored at position %d", flash_position);
+				nvs_write(&fs, NVS_CURRENT_STORAGE_ID, &flash_position, sizeof(uint16_t));
 			}							
 			fifo_counter = 0;  
 		}		

@@ -10,9 +10,7 @@
 
 #include <zephyr/types.h>
 #include <stddef.h>
-#include <string.h>
 #include <errno.h>
-#include <zephyr/sys/printk.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/kernel.h>
 

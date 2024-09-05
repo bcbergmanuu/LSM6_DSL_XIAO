@@ -1,11 +1,3 @@
-/* main.c - Application main entry point */
-
-/*
- * Copyright (c) 2015-2016 Intel Corporation
- *
- * SPDX-License-Identifier: Apache-2.0
- */
-
 #include <zephyr/types.h>
 #include <stddef.h>
 #include <string.h>
@@ -57,10 +49,6 @@ static struct bt_uuid_128 ble_device_identifier_prop = BT_UUID_INIT_128(
 static struct bt_uuid_128 ble_memory_position_prop = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0x84b45135, 0x170b, 0x4d03, 0x92b6, 0x386d7bff160d));
 
-//accelometer last result
-static struct bt_uuid_128 ble_accelometer_lastresult_prop = BT_UUID_INIT_128(
- 	BT_UUID_128_ENCODE(0x54ea5a09, 0x97d5, 0x48ab, 0xbaf4, 0x007e9d7a45ff));
-
 //accelometer data server (protobuf)
 static struct bt_uuid_128 ble_accelometer_data_prop = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0x6f2648ed, 0xe73f, 0x4b9f, 0xa809, 0xb1686d18676c));
@@ -69,14 +57,7 @@ static struct bt_uuid_128 ble_accelometer_data_prop = BT_UUID_INIT_128(
 static struct bt_uuid_128 ble_accelometer_requist_id_prop = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0x4e10fd71, 0x6cc1, 0x4fa7, 0xaa91, 0x82021582ca54));
 
-static uint8_t ble_acc_last_value_buff[4];
-static ssize_t read_acc_last_value(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-			void *buf, uint16_t len, uint16_t offset)
-{
-	const uint8_t *value = attr->user_data;	
 
-	return bt_gatt_attr_read(conn, attr, buf, len, offset, value, sizeof(ble_acc_last_value_buff));
-}
 
 static uint8_t ble_accelometer_data_buff[protobuf_chunk_size]; //size of packed protobuf
 static uint8_t ble_requist_id_buff[2]; //uint16 flash location
@@ -219,39 +200,8 @@ static ssize_t write_identifier(struct bt_conn *conn, const struct bt_gatt_attr 
  	return len;
 }
 
-//static int signed_value;
-
-// static ssize_t read_signed(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-// 			   void *buf, uint16_t len, uint16_t offset)
-// {
-// 	const char *value = attr->user_data;
-
-// 	return bt_gatt_attr_read(conn, attr, buf, len, offset, value,
-// 				 sizeof(signed_value));
-// }
-
-// static ssize_t write_signed(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-// 			    const void *buf, uint16_t len, uint16_t offset,
-// 			    uint8_t flags)
-// {
-// 	uint8_t *value = attr->user_data;
-
-// 	if (offset + len > sizeof(signed_value)) {
-// 		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
-// 	}
-
-// 	memcpy(value + offset, buf, len);
-
-// 	return len;
-// }
-
 static uint8_t notify_ble_passcode_on = 0;
 static uint8_t notify_ble_motiondata_on = 0;
-static uint8_t notify_ble_last_value_on = 0;
-
-static void ble_last_value_notify_changed(const struct bt_gatt_attr *attr, uint16_t value) {
-	notify_ble_motiondata_on = (value == BT_GATT_CCC_NOTIFY) ? 1 : 0;
-}
 
 static void ble_readmotion_data_notify_changed(const struct bt_gatt_attr *attr, uint16_t value) {
 	notify_ble_motiondata_on = (value == BT_GATT_CCC_NOTIFY) ? 1 : 0;
@@ -290,31 +240,14 @@ BT_GATT_SERVICE_DEFINE(motion_svc,
 	 		       BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
 	 		       BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
 	 		       read_acc_data_position, write_acc_data_position, ble_requist_id_buff),
-	
-	BT_GATT_CHARACTERISTIC(&ble_accelometer_lastresult_prop.uuid, 
-	 		       BT_GATT_CHRC_READ,
-	 		       BT_GATT_PERM_READ,
-	 		       read_acc_last_value, NULL, ble_acc_last_value_buff),
-	BT_GATT_CCC(ble_last_value_notify_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 
 );
 
 void ble_send_passcode(struct k_work *work) {				
 	
-	bt_gatt_notify(NULL, &motion_svc.attrs[1], ble_passcode_buff, sizeof(ble_passcode_buff));	
+	if(notify_ble_passcode_on)
+		bt_gatt_notify(NULL, &motion_svc.attrs[1], ble_passcode_buff, sizeof(ble_passcode_buff));	
 }
-
-void ble_send_acc_last_value(struct k_work *work) {				
-
-	bt_gatt_notify(NULL, &motion_svc.attrs[6], ble_acc_last_value_buff, sizeof(ble_acc_last_value_buff));	
-}
-
-
-// K_SEM_DEFINE(sem_ble_chunk, 0, 1);
-// void sendChunk_cb(struct bt_conn *conn, void *user_data) {
-// 	LOG_INF("receive cb ");
-// 	k_sem_give(&sem_ble_chunk);
-// }
 
 /// @brief Notify BLE with all chunks of data 
 /// @param ptrWorker 
@@ -334,26 +267,15 @@ void ble_notify_motiondata_proc(struct k_work *ptrWorker) {
 	
 	//fill ringbuf
 	for(size_t offset = 0; offset < packed_size; offset+=protobuf_chunk_size) {
-		memcpy(ble_accelometer_data_buff, encoded_data_cache + offset, protobuf_chunk_size);
-		
-		// struct bt_gatt_notify_params gatt_notify = 
-		// {
-		// 	.attr = notify_attr, 
-		// 	.len = sizeof(ble_accelometer_data_buff), 
-		// 	.data = ble_accelometer_data_buff, 
-		// 	.func = sendChunk_cb,			
-		// };		
+		memcpy(ble_accelometer_data_buff, encoded_data_cache + offset, protobuf_chunk_size);		
 				
 		LOG_INF("sending offset %d", offset);
 		
 		int ret = bt_gatt_notify(NULL, notify_attr, ble_accelometer_data_buff, sizeof(ble_accelometer_data_buff));
-		k_sleep(K_MSEC(400));
-		//int ret = bt_gatt_notify_cb(NULL, &gatt_notify);		
+		k_sleep(K_MSEC(50));	
 		if(ret) {
 			LOG_INF("error notify data %d", ret);	
 		}			
-		//wait for callback
-		//k_sem_take(&sem_ble_chunk, K_SECONDS(1));
 	}	
 }
 
@@ -388,16 +310,23 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	LOG_INF("Disconnected (reason 0x%02x)\n", reason);
 }
 
+static void le_data_length_updated(struct bt_conn *conn, struct bt_conn_le_data_len_info *info) {
+	LOG_INF("LE data len updated: TX (len: %d time: %d)"
+	       " RX (len: %d time: %d)\n", info->tx_max_len,
+	       info->tx_max_time, info->rx_max_len, info->rx_max_time);
+}
+
 BT_CONN_CB_DEFINE(conn_callbacks) = {
 	.connected = connected,
-	.disconnected = disconnected
+	.disconnected = disconnected,
+	.le_data_len_updated = le_data_length_updated,
 };
 
 
 
 #define BT_CONN_CUSTOM BT_LE_ADV_PARAM(BT_LE_ADV_OPT_CONNECTABLE | \
 					    BT_LE_ADV_OPT_USE_NAME, \
-					    1024, 2048, NULL) //2 seconds
+					    3884, 4096, NULL) //*1.25ms
 
 static void bt_ready(void)
 {
@@ -418,20 +347,15 @@ static void bt_ready(void)
 	LOG_INF("Advertising successfully started\n");
 }
 
-// static void auth_passkey_display(struct bt_conn *conn, unsigned int passkey)
-// {
-// 	char addr[BT_ADDR_LE_STR_LEN];
-
-// 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
-
-// 	LOG_INF("Passkey for %s: %06u\n", addr, passkey);
-	
-// 	memcpy(ble_passcode_buff, (uint8_t*)&passkey, (sizeof(ble_passcode_buff)));	
-
-// 	k_work_submit(&ble_passcode_worker);
-
-// 	bt_conn_auth_passkey_confirm(conn);
-// }
+static void auth_passkey_display(struct bt_conn *conn, unsigned int passkey)
+{
+	char addr[BT_ADDR_LE_STR_LEN];
+	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+	LOG_INF("Passkey for %s: %06u\n", addr, passkey);
+	memcpy(ble_passcode_buff, (uint8_t*)&passkey, (sizeof(ble_passcode_buff)));	
+	k_work_submit(&ble_passcode_worker);
+	bt_conn_auth_passkey_confirm(conn);
+}
 
 static void auth_cancel(struct bt_conn *conn)
 {
@@ -442,14 +366,12 @@ static void auth_cancel(struct bt_conn *conn)
 	LOG_INF("Pairing cancelled: %s\n", addr);
 }
 
-
 static struct bt_conn_auth_cb auth_cb_display = {
 	.passkey_display = NULL,// auth_passkey_display,
 	.passkey_entry = NULL,
 	.cancel = auth_cancel,
 	.passkey_confirm = NULL,	
 };
-
 
 int ble_load()
 {		
@@ -471,6 +393,5 @@ int ble_load()
 	
 	return err;
 }
-
 
 SYS_INIT(ble_load, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);

@@ -1,10 +1,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
-#include <stdio.h>
 #include <zephyr/sys/util.h>
-#include "lsm6dsl_reg.h"
-#include <string.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/logging/log.h>
@@ -12,6 +9,12 @@
 #include "storage_nvs.h"
 #include "lsm6dsl_reg.h"
 //#include <hal/nrf_gpio.h>
+
+#include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/hci.h>
+#include <zephyr/bluetooth/conn.h>
+#include <zephyr/bluetooth/uuid.h>
+#include <zephyr/bluetooth/gatt.h>
 
 #define TX_BUF_DIM          1000
 #define BOOT_TIME        30 //ms 15ms minimum 
@@ -142,6 +145,36 @@ int lsm6dsl_init(/*struct storage_module *storage */)
   return 0;
 }
 
+static uint8_t ble_acc_last_value_buff[4];
+static ssize_t read_acc_last_value(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+			void *buf, uint16_t len, uint16_t offset)
+{
+	const uint8_t *value = attr->user_data;	
+
+	return bt_gatt_attr_read(conn, attr, buf, len, offset, value, sizeof(ble_acc_last_value_buff));
+}
+
+static struct bt_uuid_128 ble_motion_sensor_result_prop = BT_UUID_INIT_128(
+	BT_UUID_128_ENCODE(0x7c3beebb, 0xba2d, 0x4634, 0xa999, 0xf61b91c75f49));
+
+static uint8_t notify_ble_motion_activity_value_on = 0;
+
+static void ble_motion_activity_notify_changed(const struct bt_gatt_attr *attr, uint16_t value) {
+	notify_ble_motion_activity_value_on = (value == BT_GATT_CCC_NOTIFY) ? 1 : 0;
+}
+
+
+
+/* Current Time Service Declaration */
+BT_GATT_SERVICE_DEFINE(ble_motion_service,
+	BT_GATT_PRIMARY_SERVICE(BT_UUID_DECLARE_16(0x170B)),
+	BT_GATT_CHARACTERISTIC(&ble_motion_sensor_result_prop.uuid, 
+            BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
+			      BT_GATT_PERM_READ,
+			      read_acc_last_value, NULL, ble_acc_last_value_buff),
+	BT_GATT_CCC(ble_motion_activity_notify_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+);
+
 // static int32_t testtilt(const stmdev_ctx_t *ctx, uint8_t *val) {
 //   uint32_t ret = 0;
 //   lsm6dsl_func_src1_t result_trig;
@@ -149,6 +182,14 @@ int lsm6dsl_init(/*struct storage_module *storage */)
 //   *val = result_trig.tilt_ia;
 //   return ret;
 // }
+
+void ble_showmotion(struct k_work *work)
+{
+  if(notify_ble_motion_activity_value_on) 
+      bt_gatt_notify(NULL, &ble_motion_service.attrs[1], ble_acc_last_value_buff, sizeof(ble_acc_last_value_buff));	
+}
+
+K_WORK_DEFINE(work_ble_showmotion, ble_showmotion);
 
 static int fifo_threashold_handler(void) {
   int ret = 0;
@@ -184,6 +225,8 @@ static int fifo_threashold_handler(void) {
   LOG_INF("average) = %4.2f", vector);
   
   store_tracked(vector);
+  memcpy(&ble_acc_last_value_buff, &vector, sizeof(float));
+  k_work_submit(&work_ble_showmotion);
   return ret;
 }
 
