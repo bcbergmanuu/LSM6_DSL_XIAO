@@ -25,7 +25,6 @@ const struct device *spi_flash_dev;
 
 
 
-
 static int flash_set_suspend() {
 	int ret = pm_device_action_run(spi_flash_dev, PM_DEVICE_ACTION_SUSPEND);
 	if(ret) { 
@@ -43,6 +42,7 @@ static int flash_set_resume() {
 }
 
 int init_internal_storage() {
+	LOG_INF("init internal storage");
 	const struct device *flash_dev = STORAGE_PARTITION_DEVICE;
 	
 	if (!device_is_ready(flash_dev)) {
@@ -80,8 +80,8 @@ int init_internal_storage() {
 	return rc;
 }
 
-int write_uniqueIdentifier(uint16_t identifier) {
-	nvs_write(&fs, NVS_DEVICE_ID, &identifier, sizeof(uint16_t) );
+int write_uniqueIdentifier(uint16_t *identifier) {
+	nvs_write(&fs, NVS_DEVICE_ID, identifier, sizeof(uint16_t) );
 	return 0;
 }
 
@@ -91,7 +91,7 @@ int read_uniqueidentifier(uint16_t *identifier) {
 }
 
 int init_storage(void) {	
-		
+	LOG_INF("init storage");
     int rc = 0;
 	rc |= init_internal_storage();
 	
@@ -122,31 +122,34 @@ void store_tracked(float vector) {
 	k_fifo_put(&storage_fifo, data);
 }
 
-int set_current_storage_id(uint16_t itemid) {
-	int err = nvs_write(&fs, NVS_CURRENT_STORAGE_ID, &itemid, sizeof(uint16_t));
-	LOG_INF("nvs storage id set to: %d", itemid);
+int set_current_storage_id(uint16_t *itemid) {
+	int err = nvs_write(&fs, NVS_CURRENT_STORAGE_ID, itemid, sizeof(uint16_t));
+	LOG_INF("nvs storage id set to: %d", *itemid);
 	if (err < 0) return err; else return 0;
 }
 
-int get_current_storage_id(uint16_t *itemid) {
+int get_current_storage_id(uint16_t *itemid) {	
 	int err = nvs_read(&fs, NVS_CURRENT_STORAGE_ID, itemid, sizeof(uint16_t));
 	if (err < 0) {
-		LOG_ERR("flash error");
+		LOG_ERR("error getting storageid");
 		return err;
-	}
+	}	
 	LOG_INF("storage requisted current id: %d", *itemid);
 	return 0;
 }
 
 int load_tracked(uint16_t itemid, struct fifo_pack *vector_list) {
 	int ret = 0;	
-	
+	if(itemid > 8192) {
+		LOG_ERR("invalid itemid request");
+		return -EFAULT;
+	}
 	ret |= flash_set_resume();
 	ret |= flash_read(spi_flash_dev, itemid * FLASH_PAGE_SIZE, vector_list, sizeof(struct fifo_pack));
 	ret |= flash_set_suspend();
 		
 	for(int x = 0; x < FLASH_BUFFER_SIZE_NVS; x+=10) {		
-		LOG_INF("datapoint %d: %4.2f", x, vector_list->vector_n[x]);
+		LOG_INF("datapoint %d: %4.2f", x, (double)vector_list->vector_n[x]);
 	}
 	return ret;
 }
@@ -186,7 +189,7 @@ void fifo_handler(void *) {
 			}
 			else {
 				LOG_INF("stored at position %d", flash_position);
-				nvs_write(&fs, NVS_CURRENT_STORAGE_ID, &flash_position, sizeof(uint16_t));
+				set_current_storage_id(&flash_position);
 			}							
 			fifo_counter = 0;  
 		}		
@@ -196,4 +199,4 @@ void fifo_handler(void *) {
 K_THREAD_DEFINE(fifohandler, 1024, fifo_handler, NULL, NULL, NULL, 8, 0, 0);
 
 
-SYS_INIT(init_storage, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
+SYS_INIT(init_storage, APPLICATION, 64);

@@ -7,6 +7,10 @@
     chosen {
         nordic,pm-ext-flash = &p25q16h;
     };
+
+	msm261d3526hicpm-c-en {
+		status = "disabled";
+	};
 };
 
 &gpio0 {
@@ -38,6 +42,10 @@
 
 &ieee802154 {
     status = "disabled";
+};
+
+&rtc0 {
+	status = "okay";
 };
 
 &usbd {

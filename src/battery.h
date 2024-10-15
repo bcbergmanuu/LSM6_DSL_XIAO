@@ -47,19 +47,6 @@ typedef struct
     uint8_t percentage;
 } BatteryState;
 
-/**
- * @brief Set battery charging to fast charge (100mA).
- *
- * @retval 0 if successful. Negative errno number on error.
- */
-int battery_set_fast_charge(void);
-
-/**
- * @brief Set battery charging to slow charge (50mA).
- *
- * @retval 0 if successful. Negative errno number on error.
- */
-int battery_set_slow_charge(void);
 
 /**
  * @brief Calculates the battery voltage using the ADC.

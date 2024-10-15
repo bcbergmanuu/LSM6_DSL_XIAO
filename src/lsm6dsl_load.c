@@ -219,10 +219,10 @@ static int fifo_threashold_handler(void) {
   average_xl.x/= counter;
   average_xl.y/= counter;
   average_xl.z/= counter;
-  LOG_INF("average: %4.2f\t%4.2f\t%4.2f", average_xl.x, average_xl.y, average_xl.z);
+  LOG_INF("average: %4.2f\t%4.2f\t%4.2f", (double) average_xl.x, (double)average_xl.y, (double)average_xl.z);
 
   float vector = sqrt(pow(average_xl.x,2)+pow(average_xl.y,2)+pow(average_xl.z,2));
-  LOG_INF("average) = %4.2f", vector);
+  LOG_INF("average) = %4.2f", (double)vector);
   
   store_tracked(vector);
   memcpy(&ble_acc_last_value_buff, &vector, sizeof(float));

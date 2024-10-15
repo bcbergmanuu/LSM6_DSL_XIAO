@@ -41,6 +41,17 @@ void timerElapsed(struct k_timer *timer_id) {
 	k_work_submit(&notifyCTS);
 }
 
+void update_time_ble_buffer() {
+	struct timespec ts = {
+        .tv_sec = 0,
+        .tv_nsec = 0,
+    };
+
+	clock_gettime(CLOCK_REALTIME, &ts);
+	LOG_INF("update time, current: %" PRId64 ", size %d" , ts.tv_sec, sizeof(time_t));
+	memcpy(&ct, &ts.tv_sec, sizeof(time_t));
+}
+
 static void ct_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
 
@@ -55,7 +66,8 @@ static void ct_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
 static ssize_t read_ct(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 		       void *buf, uint16_t len, uint16_t offset)
 {
-	const char *value = attr->user_data;
+	update_time_ble_buffer();
+	const char *value = attr->user_data;	
 
 	return bt_gatt_attr_read(conn, attr, buf, len, offset, value,
 				 sizeof(ct));
@@ -121,15 +133,8 @@ BT_GATT_SERVICE_DEFINE(cts_cvs,
 
 void ble_update_time(struct k_work *work)
 {
-    struct timespec ts = {
-        .tv_sec = 0,
-        .tv_nsec = 0,
-    };
-
-	clock_gettime(CLOCK_REALTIME, &ts);
-	LOG_INF("update time, current: %" PRId64 ", size %d" , ts.tv_sec, sizeof(time_t));
-	memcpy(&ct, &ts.tv_sec, sizeof(time_t));
-	
+    
+	update_time_ble_buffer();
 	// struct bt_gatt_attr *cts_not_attr;
 	// cts_not_attr = bt_gatt_find_by_uuid(cts_cvs.attrs, cts_cvs.attr_count, BT_UUID_CTS_CURRENT_TIME);					
 	

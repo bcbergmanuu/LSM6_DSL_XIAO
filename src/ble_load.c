@@ -112,7 +112,7 @@ static int encode_data(struct fifo_pack *stored_data, uint8_t *protobuf_packed, 
 		message.AvgMinuteList[i] = stored_data->vector_n[i];
 	}	
 
-	status = pb_encode(&stream, HourlyResult_fields, &message);
+	status = pb_encode(&stream, &HourlyResult_msg, &message);
 	*packed_size = stream.bytes_written;
 
 	LOG_INF("Encoded, actual protobuf message size was %d", stream.bytes_written); //PRIu64
@@ -131,7 +131,7 @@ static ssize_t read_memory_position(struct bt_conn *conn, const struct bt_gatt_a
 {
 	uint16_t mem_pos = 0;
 	get_current_storage_id(&mem_pos);
-	memcpy(&current_memoryPosition_buff, &mem_pos, sizeof(uint16_t));
+	memcpy(current_memoryPosition_buff, &mem_pos, sizeof(uint16_t));
 
 	const uint8_t *value = attr->user_data;	
 
@@ -150,10 +150,9 @@ static ssize_t write_memory_position(struct bt_conn *conn, const struct bt_gatt_
 	memcpy(value + offset, buf, len);
 
 	uint16_t memory_position = 0;
-	memcpy(&memory_position, value, sizeof(uint16_t));
-	write_uniqueIdentifier(memory_position);
-
-	//start worker to notify each segment of written position
+	memcpy(&memory_position, current_memoryPosition_buff, sizeof(uint16_t));
+	set_current_storage_id(&memory_position);
+	//memcpy(&memory_position, value, sizeof(uint16_t));	
 	
  	return len;
 }
@@ -175,7 +174,7 @@ static ssize_t read_identifier(struct bt_conn *conn, const struct bt_gatt_attr *
 
 	uint16_t uniqueId = 0;
 	read_uniqueidentifier(&uniqueId);
-	memcpy(&uniqueIdentifier_value, &uniqueId, sizeof(uint16_t));
+	memcpy(uniqueIdentifier_value, &uniqueId, sizeof(uint16_t));
 
 	const uint8_t *value = attr->user_data;	
 
@@ -195,7 +194,7 @@ static ssize_t write_identifier(struct bt_conn *conn, const struct bt_gatt_attr 
 
 	uint16_t uniqueId = 0;
 	memcpy(&uniqueId, value, sizeof(uint16_t));
-	write_uniqueIdentifier(uniqueId);
+	write_uniqueIdentifier(&uniqueId);
 	
  	return len;
 }
@@ -222,12 +221,12 @@ BT_GATT_SERVICE_DEFINE(motion_svc,
 	
 	BT_GATT_CHARACTERISTIC(&ble_device_identifier_prop.uuid,
 			       BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
-			       BT_GATT_PERM_READ | BT_GATT_PERM_WRITE_AUTHEN,
+			       BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
 			       read_identifier, write_identifier, uniqueIdentifier_value),
 
 	BT_GATT_CHARACTERISTIC(&ble_memory_position_prop.uuid, 
 	 		       BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
-	 		       BT_GATT_PERM_READ | BT_GATT_PERM_WRITE_AUTHEN,	 		       
+	 		       BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,	 		       
 	 		       read_memory_position, write_memory_position, current_memoryPosition_buff),
 
 	BT_GATT_CHARACTERISTIC(&ble_accelometer_data_prop.uuid, 
@@ -249,6 +248,13 @@ void ble_send_passcode(struct k_work *work) {
 		bt_gatt_notify(NULL, &motion_svc.attrs[1], ble_passcode_buff, sizeof(ble_passcode_buff));	
 }
 
+void print_data(uint8_t *data, uint32_t len) {
+	char string[255] = {0};
+    
+    
+    LOG_INF("%s\n", string);
+}
+
 /// @brief Notify BLE with all chunks of data 
 /// @param ptrWorker 
 void ble_notify_motiondata_proc(struct k_work *ptrWorker) {					
@@ -259,22 +265,22 @@ void ble_notify_motiondata_proc(struct k_work *ptrWorker) {
 	LOG_INF("NOTIFY data, reteive id %d", id_to_retreive);				
 	load_tracked(id_to_retreive, &packet);
 	
-	uint8_t encoded_data_cache[protobuf_buffer_size];
-	size_t packed_size =0;
-	encode_data(&packet, encoded_data_cache, &packed_size);	
-	
+	uint8_t encoded_data_cache[protobuf_buffer_size] = {0};
+	size_t packed_size = 0;
+	encode_data(&packet, encoded_data_cache+2, &packed_size); //shift data 2 bytes
+	memcpy(encoded_data_cache, &packed_size, sizeof(uint16_t)); //first 2 bytes for size
+
 	struct bt_gatt_attr *notify_attr = bt_gatt_find_by_uuid(motion_svc.attrs, motion_svc.attr_count, &ble_accelometer_data_prop.uuid);
 	
-	//fill ringbuf
 	for(size_t offset = 0; offset < packed_size; offset+=protobuf_chunk_size) {
-		memcpy(ble_accelometer_data_buff, encoded_data_cache + offset, protobuf_chunk_size);		
+		memcpy(ble_accelometer_data_buff, encoded_data_cache + offset, protobuf_chunk_size);	
 				
 		LOG_INF("sending offset %d", offset);
 		
 		int ret = bt_gatt_notify(NULL, notify_attr, ble_accelometer_data_buff, sizeof(ble_accelometer_data_buff));
 		k_sleep(K_MSEC(50));	
-		if(ret) {
-			LOG_INF("error notify data %d", ret);	
+		if(ret<0) {
+			LOG_ERR("error notify data %d", ret);	
 		}			
 	}	
 }
@@ -326,7 +332,7 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
 
 #define BT_CONN_CUSTOM BT_LE_ADV_PARAM(BT_LE_ADV_OPT_CONNECTABLE | \
 					    BT_LE_ADV_OPT_USE_NAME, \
-					    3884, 4096, NULL) //*1.25ms
+					    768, 1024, NULL) //*1.25ms
 
 static void bt_ready(void)
 {
@@ -346,7 +352,7 @@ static void bt_ready(void)
 
 	LOG_INF("Advertising successfully started\n");
 }
-
+/*
 static void auth_passkey_display(struct bt_conn *conn, unsigned int passkey)
 {
 	char addr[BT_ADDR_LE_STR_LEN];
@@ -356,7 +362,7 @@ static void auth_passkey_display(struct bt_conn *conn, unsigned int passkey)
 	k_work_submit(&ble_passcode_worker);
 	bt_conn_auth_passkey_confirm(conn);
 }
-
+*/
 static void auth_cancel(struct bt_conn *conn)
 {
 	char addr[BT_ADDR_LE_STR_LEN];
