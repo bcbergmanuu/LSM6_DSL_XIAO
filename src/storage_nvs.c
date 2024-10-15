@@ -148,9 +148,9 @@ int load_tracked(uint16_t itemid, struct fifo_pack *vector_list) {
 	ret |= flash_read(spi_flash_dev, itemid * FLASH_PAGE_SIZE, vector_list, sizeof(struct fifo_pack));
 	ret |= flash_set_suspend();
 		
-	for(int x = 0; x < FLASH_BUFFER_SIZE_NVS; x+=10) {		
-		LOG_INF("datapoint %d: %4.2f", x, (double)vector_list->vector_n[x]);
-	}
+	
+	LOG_INF("loaded item %d", itemid);
+	
 	return ret;
 }
 

@@ -255,9 +255,23 @@ void print_data(uint8_t *data, uint32_t len) {
     LOG_INF("%s\n", string);
 }
 
+K_SEM_DEFINE(sem_notify, 0, 1);
+
+void notify_complete_cb(struct bt_conn *conn, void *user_data)
+{
+	int err = 0;
+    if (err != 0) {
+        LOG_ERR("Notification failed with error %d", err);
+        return;
+    }
+	k_sem_give(&sem_notify);
+}
+
+
 /// @brief Notify BLE with all chunks of data 
 /// @param ptrWorker 
 void ble_notify_motiondata_proc(struct k_work *ptrWorker) {					
+
 	if(!notify_ble_motiondata_on) return;
 	struct fifo_pack packet;
 	uint16_t id_to_retreive;
@@ -272,16 +286,27 @@ void ble_notify_motiondata_proc(struct k_work *ptrWorker) {
 
 	struct bt_gatt_attr *notify_attr = bt_gatt_find_by_uuid(motion_svc.attrs, motion_svc.attr_count, &ble_accelometer_data_prop.uuid);
 	
+    struct bt_gatt_notify_params params = {
+        .attr = notify_attr,
+        .data = ble_accelometer_data_buff,
+        .len  = sizeof(ble_accelometer_data_buff),
+        .func = notify_complete_cb, 
+    };
+
 	for(size_t offset = 0; offset < packed_size; offset+=protobuf_chunk_size) {
 		memcpy(ble_accelometer_data_buff, encoded_data_cache + offset, protobuf_chunk_size);	
 				
 		LOG_INF("sending offset %d", offset);
 		
-		int ret = bt_gatt_notify(NULL, notify_attr, ble_accelometer_data_buff, sizeof(ble_accelometer_data_buff));
-		k_sleep(K_MSEC(50));	
+		int ret = bt_gatt_notify_cb(NULL, &params);
+		int semret = k_sem_take(&sem_notify, K_MSEC(200));
 		if(ret<0) {
 			LOG_ERR("error notify data %d", ret);	
 		}			
+		if(semret == -EAGAIN) {			
+			LOG_ERR("semaphone timed out");
+			return;
+		}
 	}	
 }
 
