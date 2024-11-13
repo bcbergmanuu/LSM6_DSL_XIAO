@@ -7,19 +7,22 @@
 
 #define LED0_NODE DT_ALIAS(led0)
 #define LED1_NODE DT_ALIAS(led1)
+#define LED2_NODE DT_ALIAS(led2)
+#define number_leds 3
 
 static const struct gpio_dt_spec leds[] = {
     GPIO_DT_SPEC_GET(LED0_NODE, gpios),
     GPIO_DT_SPEC_GET(LED1_NODE, gpios),    
+    GPIO_DT_SPEC_GET(LED2_NODE, gpios),    
 };
 
 static void switchof(struct k_work *work);
 
-struct k_work_delayable dw_switchoffs [2];
+struct k_work_delayable dw_switchoffs [number_leds];
 
 static int led_init() {
     int ret = 0;
-    for(int x = 0; x< 2; x++) {
+    for(int x = 0; x< number_leds; x++) {
         ret |= gpio_pin_configure_dt(&leds[x], GPIO_OUTPUT_ACTIVE);
         ret |= gpio_pin_set_dt(&leds[x], 0);
         k_work_init_delayable(&dw_switchoffs[x], switchof);  

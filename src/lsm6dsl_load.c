@@ -115,11 +115,11 @@ int lsm6dsl_init(/*struct storage_module *storage */)
   do {
     lsm6dsl_reset_get(&dev_ctx, &rst);
   } while (rst);
-//exp
-  static uint8_t sig_motion_threasold  = 10;
+//sig motion
+  static uint8_t sig_motion_threasold  = 5;
   lsm6dsl_motion_sens_set(&dev_ctx, 1);  
   lsm6dsl_motion_threshold_set(&dev_ctx, &sig_motion_threasold);
-//end exp
+//end sig motion
 
   lsm6dsl_fifo_mode_set(&dev_ctx, LSM6DSL_STREAM_MODE);
   lsm6dsl_xl_power_mode_set(&dev_ctx, LSM6DSL_XL_NORMAL);
@@ -132,14 +132,29 @@ int lsm6dsl_init(/*struct storage_module *storage */)
   lsm6dsl_den_mode_set(&dev_ctx, LSM6DSL_LEVEL_LETCHED);
   lsm6dsl_fifo_data_rate_set(&dev_ctx, LSM6DSL_FIFO_12Hz5); //12Hz5
   lsm6dsl_rounding_mode_set(&dev_ctx, LSM6DSL_ROUND_XL);
-  lsm6dsl_xl_data_rate_set(&dev_ctx, LSM6DSL_XL_ODR_52Hz);  //52Hz
-  lsm6dsl_xl_hp_bandwidth_set(&dev_ctx, LSM6DSL_XL_HP_ODR_DIV_4);    
-
+  lsm6dsl_xl_data_rate_set(&dev_ctx, LSM6DSL_XL_ODR_416Hz);  //52Hz
+  lsm6dsl_xl_hp_bandwidth_set(&dev_ctx, LSM6DSL_XL_HP_ODR_DIV_4);    //DIV_4
+  
+  
+  
 //exp
+//tab
+  
+  lsm6dsl_tap_cfg_t tap_cfg = {.tap_x_en = 1, .tap_y_en = 1, .tap_z_en = 1, .interrupts_enable =1, .inact_en = 0, .slope_fds = 0};
+  lsm6dsl_tap_ths_6d_t tab_ths = {.tap_ths =12, .d4d_en =1};
+  lsm6dsl_int_dur2_t tap_dur = {.dur = 7, .quiet =3, .shock = 3};
+  lsm6dsl_wake_up_ths_t tap_ths = {.single_double_tap = 1};
+  //lsm6dsl_xl_hp_path_internal_set(&dev_ctx, &tap_cfg);
+  lsm6dsl_write_reg(&dev_ctx, LSM6DSL_TAP_CFG, (uint8_t *)&tap_cfg, 1);
+  lsm6dsl_write_reg(&dev_ctx, LSM6DSL_TAP_THS_6D, (uint8_t*)&tab_ths, 1);
+  lsm6dsl_write_reg(&dev_ctx, LSM6DSL_INT_DUR2, (uint8_t *)&tap_dur, 1);
+  lsm6dsl_write_reg(&dev_ctx, LSM6DSL_WAKE_UP_THS, (uint8_t *)&tap_ths, 1);
+
+//end tab
   lsm6dsl_tilt_sens_set(&dev_ctx, 1);  
 //end exp
 
-  lsm6dsl_int1_route_t intset1 = { .int1_fth = 1, .int1_tilt = 1, .int1_sign_mot = 1};
+  lsm6dsl_int1_route_t intset1 = { .int1_fth = 1, .int1_tilt = 1, .int1_sign_mot = 1, .int1_double_tap = 1};
   lsm6dsl_pin_int1_route_set(&dev_ctx, intset1); 
   
   LOG_INF("settigs completed");
@@ -248,6 +263,12 @@ static void lsm6dsl_data_handler(struct k_work *work)
   if(trigger_received.sign_motion_ia) {
     LOG_INF("sign_motion_ia trigger received"); 
     blink(1);
+  }
+  lsm6dsl_tap_src_t tab_detection = {0};
+  ret |= lsm6dsl_tap_src_get(&dev_ctx, &tab_detection);
+  if(tab_detection.tap_ia) {
+    LOG_INF("doubletab detected");
+    blink(2);
   }
 
   if(fifo_threashold_handler()) {
