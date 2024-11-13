@@ -84,6 +84,8 @@ struct xlData {
 
 //struct storage_module *storage_m;
 
+
+
 int lsm6dsl_init(/*struct storage_module *storage */)
 {  
   //storage_m = storage;
@@ -113,6 +115,11 @@ int lsm6dsl_init(/*struct storage_module *storage */)
   do {
     lsm6dsl_reset_get(&dev_ctx, &rst);
   } while (rst);
+//exp
+  static uint8_t sig_motion_threasold  = 10;
+  lsm6dsl_motion_sens_set(&dev_ctx, 1);  
+  lsm6dsl_motion_threshold_set(&dev_ctx, &sig_motion_threasold);
+//end exp
 
   lsm6dsl_fifo_mode_set(&dev_ctx, LSM6DSL_STREAM_MODE);
   lsm6dsl_xl_power_mode_set(&dev_ctx, LSM6DSL_XL_NORMAL);
@@ -130,11 +137,9 @@ int lsm6dsl_init(/*struct storage_module *storage */)
 
 //exp
   lsm6dsl_tilt_sens_set(&dev_ctx, 1);  
-  // uint8_t val = 0;
-  // LOG_INF("trigger received:%d", val);
 //end exp
 
-  lsm6dsl_int1_route_t intset1 = { .int1_fth = 1, .int1_tilt = 1 };
+  lsm6dsl_int1_route_t intset1 = { .int1_fth = 1, .int1_tilt = 1, .int1_sign_mot = 1};
   lsm6dsl_pin_int1_route_set(&dev_ctx, intset1); 
   
   LOG_INF("settigs completed");
@@ -171,11 +176,12 @@ BT_GATT_SERVICE_DEFINE(ble_motion_service,
 	BT_GATT_CCC(ble_motion_activity_notify_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 );
 
-static int32_t tilt_has_triggered(const stmdev_ctx_t *ctx, uint8_t *val) {
+static int32_t tilt_has_triggered(const stmdev_ctx_t *ctx, lsm6dsl_func_src1_t *val) {
   uint32_t ret = 0;
   lsm6dsl_func_src1_t result_trig;
+  //uint8_t result;
   ret |= lsm6dsl_read_reg(ctx, LSM6DSL_FUNC_SRC1, (uint8_t *)&result_trig, 1);
-  *val = result_trig.tilt_ia;
+  *val = result_trig;
   return ret;
 }
 
@@ -195,13 +201,7 @@ static int fifo_threashold_handler(void) {
   struct xlData average_xl = {0};
   
   ret |= lsm6dsl_fifo_data_level_get(&dev_ctx, &num);  
-  
-  LOG_INF("numvalues %d", (int)num);
-  if(num == 0){
-    return -1;
-    LOG_ERR("triggered but no data?!");
-  }
-
+  LOG_INF("numvalues %d", (int)num);  
   if(num < 1920) {
     //wait for next interrupt to occur
     LOG_INF("buffer not full, wait for next round");
@@ -235,15 +235,19 @@ static int fifo_threashold_handler(void) {
 
 static void lsm6dsl_data_handler(struct k_work *work)
 {  
-  uint8_t tilt_trigger_received = 0;
-  int32_t ret = tilt_has_triggered(&dev_ctx, &tilt_trigger_received);
+  lsm6dsl_func_src1_t trigger_received = {0};
+  int32_t ret = tilt_has_triggered(&dev_ctx, &trigger_received);
   if(ret) {
-    LOG_ERR("could not test tilt");
+    LOG_ERR("unable to read trigger source");
     return;
   }
-  if(tilt_trigger_received) {
-    LOG_INF("TILT.IA trigger received:%d", tilt_trigger_received);   
-    blink();
+  if(trigger_received.tilt_ia) {
+    LOG_INF("TILT.IA trigger received");   
+    blink(0);
+  }
+  if(trigger_received.sign_motion_ia) {
+    LOG_INF("sign_motion_ia trigger received"); 
+    blink(1);
   }
 
   if(fifo_threashold_handler()) {
