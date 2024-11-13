@@ -41,7 +41,7 @@ static void switchof(struct k_work *work) {
 
 void blink(uint8_t color) {    
     gpio_pin_set_dt(&leds[color], 1);
-    k_work_schedule(&dw_switchoffs[color], K_MSEC(500));
+    k_work_schedule(&dw_switchoffs[color], K_MSEC(768));
 }
 
 SYS_INIT(led_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);

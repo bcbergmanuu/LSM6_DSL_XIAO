@@ -116,7 +116,7 @@ int lsm6dsl_init(/*struct storage_module *storage */)
     lsm6dsl_reset_get(&dev_ctx, &rst);
   } while (rst);
 //sig motion
-  static uint8_t sig_motion_threasold  = 5;
+  static uint8_t sig_motion_threasold  = 17;
   lsm6dsl_motion_sens_set(&dev_ctx, 1);  
   lsm6dsl_motion_threshold_set(&dev_ctx, &sig_motion_threasold);
 //end sig motion
