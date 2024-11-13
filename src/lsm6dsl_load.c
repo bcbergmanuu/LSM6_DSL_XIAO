@@ -8,7 +8,8 @@
 #include <math.h>
 #include "storage_nvs.h"
 #include "lsm6dsl_reg.h"
-//#include <hal/nrf_gpio.h>
+#include "lsm6dsl_load.h"
+#include "led_indicator.h"
 
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/hci.h>
@@ -16,12 +17,7 @@
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/bluetooth/gatt.h>
 
-#define TX_BUF_DIM          1000
-#define BOOT_TIME        30 //ms 15ms minimum 
-#define LSM6DSL_ADDR 0x6a
-#define ZEPHYR_USER_NODE DT_PATH(zephyr_user)
-#define fifo_pattern 3 //3x 16 bit for only the accelometer
-#define FIFO_BUFFER_LENGTH 675 //2046max /3 byte per sample samples /12hz5 =54sec
+
 
 BUILD_ASSERT(FIFO_BUFFER_LENGTH % fifo_pattern == 0, "FIFO_BUFFER_LENGTH should be devisible by fifo_pattern");
 
@@ -133,12 +129,12 @@ int lsm6dsl_init(/*struct storage_module *storage */)
   lsm6dsl_xl_hp_bandwidth_set(&dev_ctx, LSM6DSL_XL_HP_ODR_DIV_4);    
 
 //exp
-  // lsm6dsl_tilt_sens_set(&dev_ctx, 1);  
+  lsm6dsl_tilt_sens_set(&dev_ctx, 1);  
   // uint8_t val = 0;
   // LOG_INF("trigger received:%d", val);
 //end exp
 
-  lsm6dsl_int1_route_t intset1 = { .int1_fth = 1, /* .int1_tilt = 1 */};
+  lsm6dsl_int1_route_t intset1 = { .int1_fth = 1, .int1_tilt = 1 };
   lsm6dsl_pin_int1_route_set(&dev_ctx, intset1); 
   
   LOG_INF("settigs completed");
@@ -175,13 +171,13 @@ BT_GATT_SERVICE_DEFINE(ble_motion_service,
 	BT_GATT_CCC(ble_motion_activity_notify_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 );
 
-// static int32_t testtilt(const stmdev_ctx_t *ctx, uint8_t *val) {
-//   uint32_t ret = 0;
-//   lsm6dsl_func_src1_t result_trig;
-//   ret |= lsm6dsl_read_reg(ctx, LSM6DSL_FUNC_SRC1, (uint8_t *)&result_trig, 1);
-//   *val = result_trig.tilt_ia;
-//   return ret;
-// }
+static int32_t tilt_has_triggered(const stmdev_ctx_t *ctx, uint8_t *val) {
+  uint32_t ret = 0;
+  lsm6dsl_func_src1_t result_trig;
+  ret |= lsm6dsl_read_reg(ctx, LSM6DSL_FUNC_SRC1, (uint8_t *)&result_trig, 1);
+  *val = result_trig.tilt_ia;
+  return ret;
+}
 
 void ble_showmotion(struct k_work *work)
 {
@@ -198,15 +194,22 @@ static int fifo_threashold_handler(void) {
   
   struct xlData average_xl = {0};
   
-  memset(data_raw_acceleration.u8bit, 0x00, 3*sizeof(int16_t));
-
-  ret |= lsm6dsl_fifo_data_level_get(&dev_ctx, &num);
+  ret |= lsm6dsl_fifo_data_level_get(&dev_ctx, &num);  
   
   LOG_INF("numvalues %d", (int)num);
   if(num == 0){
     return -1;
     LOG_ERR("triggered but no data?!");
   }
+
+  if(num < 1920) {
+    //wait for next interrupt to occur
+    LOG_INF("buffer not full, wait for next round");
+    return 0;
+  }
+
+  memset(data_raw_acceleration.u8bit, 0x00, 3*sizeof(int16_t));
+
   for(int x = 0; x <= (num-fifo_pattern); x+=fifo_pattern) {        
       
     lsm6dsl_fifo_raw_data_get(&dev_ctx, data_raw_acceleration.u8bit, fifo_pattern * sizeof(int16_t));                                                          
@@ -232,17 +235,20 @@ static int fifo_threashold_handler(void) {
 
 static void lsm6dsl_data_handler(struct k_work *work)
 {  
-  //uint8_t val = 0;
-  //testtilt(&dev_ctx, &val);
-  
-  //if(val) {
-  //  LOG_INF("TILT.IA trigger received:%d", val);    
-  //} else {
-    if(fifo_threashold_handler()) {
+  uint8_t tilt_trigger_received = 0;
+  int32_t ret = tilt_has_triggered(&dev_ctx, &tilt_trigger_received);
+  if(ret) {
+    LOG_ERR("could not test tilt");
+    return;
+  }
+  if(tilt_trigger_received) {
+    LOG_INF("TILT.IA trigger received:%d", tilt_trigger_received);   
+    blink();
+  }
+
+  if(fifo_threashold_handler()) {
       LOG_ERR("error handling fifo");
-    }
-  //}
-    
+  }      
   //gpio_pin_interrupt_configure_dt(&signal, GPIO_INT_LEVEL_HIGH);
 }
 

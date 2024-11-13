@@ -163,8 +163,7 @@ void fifo_handler(void *) {
 	
 	while(true) {				
 		rx_value = k_fifo_get(&storage_fifo, K_FOREVER);			
-		k_free(rx_value);
-	
+			
 		fifo_packer.vector_n[fifo_counter] = rx_value->fifo_buffer;						
 		fifo_counter++;
 
@@ -192,7 +191,8 @@ void fifo_handler(void *) {
 				set_current_storage_id(&flash_position);
 			}							
 			fifo_counter = 0;  
-		}		
+		}
+		k_free(rx_value); 
 	}
 }
 

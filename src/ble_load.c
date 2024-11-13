@@ -2,7 +2,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <errno.h>
-#include <zephyr/sys/printk.h>
+
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/kernel.h>
 
@@ -98,6 +98,7 @@ static ssize_t read_acc_data(struct bt_conn *conn, const struct bt_gatt_attr *at
 }
 
 //protobuf encode sensor data 
+//todo: might want to use double?
 static int encode_data(struct fifo_pack *stored_data, uint8_t *protobuf_packed, size_t *packed_size) {
 	bool status;
 
@@ -118,7 +119,7 @@ static int encode_data(struct fifo_pack *stored_data, uint8_t *protobuf_packed, 
 	LOG_INF("Encoded, actual protobuf message size was %d", stream.bytes_written); //PRIu64
 
 	if (!status) {
-		printk("Encoding failed: %s\n", PB_GET_ERROR(&stream));
+		LOG_ERR("Encoding failed: %s\n", PB_GET_ERROR(&stream));
 	}
 
 	return status;
@@ -371,7 +372,7 @@ static void bt_ready(void)
 
 	err = bt_le_adv_start(BT_CONN_CUSTOM, ad, ARRAY_SIZE(ad), NULL, 0);
 	if (err) {
-		printk("Advertising failed to start (err %d)\n", err);
+		LOG_ERR("Advertising failed to start (err %d)\n", err);
 		return;
 	}
 
