@@ -1,6 +1,3 @@
-
-![testing](https://github.com/bcbergmanuu/LSM6_DSL_XIAO/blob/master/assets/testboard.jpg?raw=true)
-
 # Issues
 
 ### done:
@@ -27,14 +24,25 @@
 
 # Power measurement
 
-### Power double tab:
+### Power double tab, 416Hz:
+
 ![power_double_tap](https://github.com/bcbergmanuu/LSM6_DSL_XIAO/blob/master/assets/power-double-tab.png?raw=true)
 
 expected alive days @ .5Ah:
-$5*10^5/(212*24)=95$
 
-### Power minimum
+$95={{{5*{10^5}}\over{212*24}}}$
+
+### Power minimum, 12.5Hz
+
 ![power_minimal](https://github.com/bcbergmanuu/LSM6_DSL_XIAO/blob/master/assets/power-consumption.png?raw=true)
+
 expected alive days @ .5Ah:
-$5*10^5/(41*24)=508$
+
+$508={{{5*{10^5}}\over{41*24}}}$ 
+
+# Test bench
+
+![testing](https://github.com/bcbergmanuu/LSM6_DSL_XIAO/blob/master/assets/testboard.jpg?raw=true)
+
+
 
