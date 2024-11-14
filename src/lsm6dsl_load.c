@@ -82,14 +82,42 @@ struct xlData {
     float z;
 };  
 
-//struct storage_module *storage_m;
+int lsm6dsl_set_interrupts(bool withDoubletap) {
+  int ret = 0;
+  lsm6dsl_int1_route_t intset1 = { .int1_fth = 1, /*.int1_tilt = 1, */ .int1_sign_mot = 1, .int1_double_tap = withDoubletap};
+  ret |= lsm6dsl_pin_int1_route_set(&dev_ctx, intset1); 
+  return ret;
+}
+
+static bool sigMotionDetected = false;
+
+/// @brief Enables significant motion detection
+/// @return 0 if succeed
+int lsm6dsl_config_doubletap(bool setEnabled) {
+  int ret = 0;
+
+  lsm6dsl_xl_data_rate_set(&dev_ctx, setEnabled ? LSM6DSL_XL_ODR_416Hz : LSM6DSL_XL_ODR_52Hz); 
+  lsm6dsl_tap_cfg_t tap_cfg = {.tap_x_en = setEnabled, .tap_y_en = setEnabled, .tap_z_en = setEnabled, .interrupts_enable =setEnabled, .inact_en = 0, .slope_fds = 0};
+  lsm6dsl_tap_ths_6d_t tab_ths = {.tap_ths =12, .d4d_en =1};
+  lsm6dsl_int_dur2_t tap_dur = {.dur = 7, .quiet =3, .shock = 3};
+  lsm6dsl_wake_up_ths_t tap_ths = {.single_double_tap = 1};
+  //lsm6dsl_xl_hp_path_internal_set(&dev_ctx, &tap_cfg);
+  ret |= lsm6dsl_write_reg(&dev_ctx, LSM6DSL_TAP_CFG, (uint8_t *)&tap_cfg, 1);
+  ret |= lsm6dsl_write_reg(&dev_ctx, LSM6DSL_TAP_THS_6D, (uint8_t*)&tab_ths, 1);
+  ret |= lsm6dsl_write_reg(&dev_ctx, LSM6DSL_INT_DUR2, (uint8_t *)&tap_dur, 1);
+  ret |= lsm6dsl_write_reg(&dev_ctx, LSM6DSL_WAKE_UP_THS, (uint8_t *)&tap_ths, 1);
+
+  lsm6dsl_set_interrupts(setEnabled);
+  
+  return ret;
+}
 
 
 
 int lsm6dsl_init(/*struct storage_module *storage */)
 {  
-  //storage_m = storage;
   
+  int ret = 0;
   attachinterrupt();
   /* Initialize mems driver interface */  
   dev_ctx.write_reg = platform_write;
@@ -102,7 +130,8 @@ int lsm6dsl_init(/*struct storage_module *storage */)
   platform_delay(BOOT_TIME);
   /* Check device ID */
   whoamI = 0;
-  lsm6dsl_device_id_get(&dev_ctx, &whoamI);
+  ret |= lsm6dsl_device_id_get(&dev_ctx, &whoamI);
+  
 
   if ( whoamI != LSM6DSL_ID ) {
     LOG_ERR("device not found");
@@ -110,55 +139,35 @@ int lsm6dsl_init(/*struct storage_module *storage */)
   }
 
   /* Restore default configuration */
-  lsm6dsl_reset_set(&dev_ctx, PROPERTY_ENABLE);
+  ret |= lsm6dsl_reset_set(&dev_ctx, PROPERTY_ENABLE);
 
   do {
-    lsm6dsl_reset_get(&dev_ctx, &rst);
-  } while (rst);
+    ret |= lsm6dsl_reset_get(&dev_ctx, &rst);
+  } while (ret == 0 && rst);
 //sig motion
-  static uint8_t sig_motion_threasold  = 17;
-  lsm6dsl_motion_sens_set(&dev_ctx, 1);  
-  lsm6dsl_motion_threshold_set(&dev_ctx, &sig_motion_threasold);
+  static uint8_t sig_motion_threasold  = 1;
+  ret |= lsm6dsl_motion_sens_set(&dev_ctx, 1);  
+  ret |= lsm6dsl_motion_threshold_set(&dev_ctx, &sig_motion_threasold);
 //end sig motion
 
-  lsm6dsl_fifo_mode_set(&dev_ctx, LSM6DSL_STREAM_MODE);
-  lsm6dsl_xl_power_mode_set(&dev_ctx, LSM6DSL_XL_NORMAL);
-  lsm6dsl_xl_full_scale_set(&dev_ctx, LSM6DSL_2g);
-  lsm6dsl_xl_reference_mode_set(&dev_ctx, PROPERTY_DISABLE);
-  lsm6dsl_fifo_xl_batch_set(&dev_ctx, LSM6DSL_FIFO_XL_NO_DEC);
-  lsm6dsl_fifo_gy_batch_set(&dev_ctx, LSM6DSL_FIFO_GY_DISABLE);  
-  lsm6dsl_fifo_watermark_set(&dev_ctx, FIFO_BUFFER_LENGTH*fifo_pattern);
+  ret |= lsm6dsl_fifo_mode_set(&dev_ctx, LSM6DSL_STREAM_MODE);
+  ret |= lsm6dsl_xl_power_mode_set(&dev_ctx, LSM6DSL_XL_NORMAL);
+  ret |= lsm6dsl_xl_full_scale_set(&dev_ctx, LSM6DSL_2g);
+  ret |= lsm6dsl_xl_reference_mode_set(&dev_ctx, PROPERTY_DISABLE);
+  ret |= lsm6dsl_fifo_xl_batch_set(&dev_ctx, LSM6DSL_FIFO_XL_NO_DEC);
+  ret |= lsm6dsl_fifo_gy_batch_set(&dev_ctx, LSM6DSL_FIFO_GY_DISABLE);  
+  ret |= lsm6dsl_fifo_watermark_set(&dev_ctx, FIFO_BUFFER_LENGTH*fifo_pattern);
   //lsm6dsl_fifo_write_trigger_set(&dev_ctx, LSM6DSL_TRG_XL_GY_DRDY);
-  lsm6dsl_den_mode_set(&dev_ctx, LSM6DSL_LEVEL_LETCHED);
-  lsm6dsl_fifo_data_rate_set(&dev_ctx, LSM6DSL_FIFO_12Hz5); //12Hz5
-  lsm6dsl_rounding_mode_set(&dev_ctx, LSM6DSL_ROUND_XL);
-  lsm6dsl_xl_data_rate_set(&dev_ctx, LSM6DSL_XL_ODR_416Hz);  //52Hz
-  lsm6dsl_xl_hp_bandwidth_set(&dev_ctx, LSM6DSL_XL_HP_ODR_DIV_4);    //DIV_4
-  
-  
-  
-//exp
-//tab
-  
-  lsm6dsl_tap_cfg_t tap_cfg = {.tap_x_en = 1, .tap_y_en = 1, .tap_z_en = 1, .interrupts_enable =1, .inact_en = 0, .slope_fds = 0};
-  lsm6dsl_tap_ths_6d_t tab_ths = {.tap_ths =12, .d4d_en =1};
-  lsm6dsl_int_dur2_t tap_dur = {.dur = 7, .quiet =3, .shock = 3};
-  lsm6dsl_wake_up_ths_t tap_ths = {.single_double_tap = 1};
-  //lsm6dsl_xl_hp_path_internal_set(&dev_ctx, &tap_cfg);
-  lsm6dsl_write_reg(&dev_ctx, LSM6DSL_TAP_CFG, (uint8_t *)&tap_cfg, 1);
-  lsm6dsl_write_reg(&dev_ctx, LSM6DSL_TAP_THS_6D, (uint8_t*)&tab_ths, 1);
-  lsm6dsl_write_reg(&dev_ctx, LSM6DSL_INT_DUR2, (uint8_t *)&tap_dur, 1);
-  lsm6dsl_write_reg(&dev_ctx, LSM6DSL_WAKE_UP_THS, (uint8_t *)&tap_ths, 1);
-
-//end tab
-  lsm6dsl_tilt_sens_set(&dev_ctx, 1);  
-//end exp
-
-  lsm6dsl_int1_route_t intset1 = { .int1_fth = 1, .int1_tilt = 1, .int1_sign_mot = 1, .int1_double_tap = 1};
-  lsm6dsl_pin_int1_route_set(&dev_ctx, intset1); 
+  ret |= lsm6dsl_den_mode_set(&dev_ctx, LSM6DSL_LEVEL_LETCHED);
+  ret |= lsm6dsl_fifo_data_rate_set(&dev_ctx, LSM6DSL_FIFO_12Hz5); //12Hz5
+  ret |= lsm6dsl_rounding_mode_set(&dev_ctx, LSM6DSL_ROUND_XL);
+  ret |= lsm6dsl_xl_data_rate_set(&dev_ctx, LSM6DSL_XL_ODR_52Hz);  //52Hz
+  ret |= lsm6dsl_xl_hp_bandwidth_set(&dev_ctx, LSM6DSL_XL_HP_ODR_DIV_4);    //DIV_4
+  ret |= lsm6dsl_set_interrupts(false);
+//  lsm6dsl_tilt_sens_set(&dev_ctx, 1); 
   
   LOG_INF("settigs completed");
-  return 0;
+  return ret;
 }
 
 static uint8_t ble_acc_last_value_buff[4];
@@ -219,8 +228,14 @@ static int fifo_threashold_handler(void) {
   LOG_INF("numvalues %d", (int)num);  
   if(num < 1920) {
     //wait for next interrupt to occur
-    LOG_INF("buffer not full, wait for next round");
+    LOG_INF("buffer not filled");
     return 0;
+  }
+  
+  if(sigMotionDetected) {
+    sigMotionDetected = false;
+  } else {
+    lsm6dsl_config_doubletap(false);
   }
 
   memset(data_raw_acceleration.u8bit, 0x00, 3*sizeof(int16_t));
@@ -256,12 +271,14 @@ static void lsm6dsl_data_handler(struct k_work *work)
     LOG_ERR("unable to read trigger source");
     return;
   }
-  if(trigger_received.tilt_ia) {
-    LOG_INF("TILT.IA trigger received");   
-    blink(0);
-  }
+  // if(trigger_received.tilt_ia) {
+  //   LOG_INF("TILT.IA trigger received");   
+  //   blink(0);
+  // }
   if(trigger_received.sign_motion_ia) {
-    LOG_INF("sign_motion_ia trigger received"); 
+    LOG_INF("sign_motion_ia trigger received");
+    lsm6dsl_config_doubletap(true);
+    sigMotionDetected = true;
     blink(1);
   }
   lsm6dsl_tap_src_t tab_detection = {0};

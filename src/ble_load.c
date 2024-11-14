@@ -358,7 +358,7 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
 
 #define BT_CONN_CUSTOM BT_LE_ADV_PARAM(BT_LE_ADV_OPT_CONNECTABLE | \
 					    BT_LE_ADV_OPT_USE_NAME, \
-					    768, 1024, NULL) //*1.25ms
+					    2048+512+64, 4098, NULL) //*1.25ms
 
 static void bt_ready(void)
 {
